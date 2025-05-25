@@ -1,15 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
+use image::{imageops::FilterType};
 
 /// Allowed thumbnail widths (pixels). Should be divisors of 1920 for best quality.
-pub const ALLOWED_THUMB_SIZES: [u32; 5] = [1920, 1440, 960, 720, 480];
+pub const ALLOWED_THUMB_SIZES: [u32; 3] = [960, 720, 480];
 
 /// Returns the path for a thumbnail of a given image at a given size
-pub fn thumbnail_path(image_path: &Path, thumb_dir: &Path, size: u32) -> PathBuf {
-    let stem = image_path.file_stem().unwrap().to_string_lossy();
-    let ext = "png"; // Always save thumbnails as png
-    thumb_dir.join(format!("{}_{}.{}", stem, size, ext))
+pub fn thumbnail_path(img_path: &Path, thumb_dir: &Path, size: u32) -> PathBuf {
+    let stem = img_path.file_stem().unwrap().to_string_lossy();
+    thumb_dir.join(format!("{}_{}.webp", stem, size))
 }
 
 /// Generates all allowed thumbnails for an image (call this on upload)
@@ -20,7 +19,19 @@ pub fn generate_all_thumbnails(orig_img_path: &Path, thumb_dir: &Path) {
         for &size in ALLOWED_THUMB_SIZES.iter() {
             let thumb = img.resize(size, (size as f32 * aspect) as u32, FilterType::Lanczos3);
             let thumb_path = thumbnail_path(orig_img_path, thumb_dir, size);
-            let _ = thumb.save_with_format(&thumb_path, ImageFormat::Png);
+            if !thumb_path.exists() {
+                let resized = img.resize_exact(size, size, FilterType::Lanczos3);
+                // Save as WebP
+                use std::fs::File;
+                use std::io::Write;
+                if let Ok(mut file) = File::create(&thumb_path) {
+                    if let Err(e) = resized.write_to(&mut file, image::ImageFormat::WebP) {
+                        eprintln!("Failed to write WebP thumbnail: {}", e);
+                    }
+                } else {
+                    eprintln!("Failed to create WebP thumbnail file");
+                }
+            }
         }
     }
 }
