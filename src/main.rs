@@ -121,8 +121,9 @@ impl App for NadexApp {
                 }
             }
         }
-        egui::TopBottomPanel::top("map_selector_panel").show(ctx, |ui| {
+        egui::TopBottomPanel::top("controls_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Map selection icon
                 ui.label("Map:");
                 egui::ComboBox::new("map_selector", "")
                     .selected_text(&self.current_map)
@@ -130,24 +131,11 @@ impl App for NadexApp {
                         for map in &self.maps {
                             if ui.selectable_value(&mut self.current_map, map.to_string(), *map).clicked() {
                                 // Map changed
-
                             }
                         }
                     });
-            });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Lineup Screenshots");
-
-            // Upload button
-            if ui.button("Upload Screenshot").clicked() {
-                self.pending_file_dialog = true;
-            }
-
-            // Grid controls
-            ui.horizontal(|ui| {
-                ui.label("Image size:");
+                // Image size icon
+                ui.label("Image Size:");
                 let mut idx = ALLOWED_THUMB_SIZES.iter().position(|&s| s == self.grid_image_size as u32).unwrap_or(0);
                 egui::ComboBox::from_id_source("thumb_size_select")
                     .selected_text(format!("{} px", ALLOWED_THUMB_SIZES[idx]))
@@ -158,7 +146,16 @@ impl App for NadexApp {
                             }
                         }
                     });
+                // Upload icon button
+                if ui.button("Upload").on_hover_text("Upload Screenshot").clicked() {
+                    self.pending_file_dialog = true;
+                }
             });
+        });
+
+        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            // Removed heading for more space
+
 
             // Show error message if any
             if let Some(ref msg) = self.error_message {
@@ -186,18 +183,18 @@ impl App for NadexApp {
                     }
                 }
                 // Determine number of columns to fit the window
-                let available_width = ui.available_width();
+                let grid_rect = ui.max_rect();
                 let spacing = 12.0;
                 let img_w = self.grid_image_size;
-                let _num_columns = ((available_width + spacing) / (img_w + spacing)).floor().max(1.0) as usize;
-                let _row = 0;
+                let num_columns = ((grid_rect.width() + spacing) / (img_w + spacing)).floor().max(1.0) as usize;
                 egui::ScrollArea::vertical().show_viewport(ui, |ui, viewport| {
                     let grid = egui::Grid::new("image_grid");
                     // Estimate visible rows based on scroll offset and viewport height
                     let img_h = self.grid_image_size;
                     let spacing = 12.0;
                     let row_height = img_h + spacing;
-                    let num_columns = ((ui.available_width() + spacing) / (self.grid_image_size + spacing)).floor().max(1.0) as usize;
+                    // Use the same num_columns for visible row math
+
                     let total_images = filenames.iter().filter(|f| {
                         let img_path = self.data_dir.join(map).join(f);
                         img_path.exists()
@@ -216,8 +213,9 @@ impl App for NadexApp {
                             let this_row = i / num_columns;
                             if this_row < first_visible_row || this_row > last_visible_row {
                                 // Not visible, show placeholder
-                                let (w, h) = (self.grid_image_size, self.grid_image_size);
-                                let rect = ui.allocate_space(egui::Vec2::new(w, h));
+                                let display_width = self.grid_image_size;
+                                let display_height = self.grid_image_size * 3.0 / 4.0;
+                                let rect = ui.allocate_space(egui::Vec2::new(display_width, display_height));
                                 ui.painter().rect_filled(rect.1, 4.0, egui::Color32::from_gray(80));
                             } else {
                                 let img_path = self.data_dir.join(&self.current_map).join(filename);
@@ -250,14 +248,17 @@ impl App for NadexApp {
                                             self.thumb_cache_order.push_back(cache_key.clone());
                                         }
                                         if let Some(texture) = self.thumb_texture_cache.get(&cache_key) {
-                                            ui.add(egui::Image::new(texture).fit_to_exact_size(egui::Vec2::new(self.grid_image_size, self.grid_image_size)));
+                                            let display_width = self.grid_image_size;
+                                            let display_height = self.grid_image_size * 3.0 / 4.0;
+                                            ui.add(egui::Image::new(texture).fit_to_exact_size(egui::Vec2::new(display_width, display_height)));
                                             loaded = true;
                                         }
                                     }
                                 }
                                 if !loaded {
-                                    let (w, h) = (self.grid_image_size, self.grid_image_size);
-                                    let rect = ui.allocate_space(egui::Vec2::new(w, h));
+                                    let display_width = self.grid_image_size;
+                                    let display_height = self.grid_image_size * 3.0 / 4.0;
+                                    let rect = ui.allocate_space(egui::Vec2::new(display_width, display_height));
                                     ui.painter().rect_filled(rect.1, 4.0, egui::Color32::from_gray(80));
                                 }
                             }

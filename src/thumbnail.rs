@@ -20,7 +20,9 @@ pub fn generate_all_thumbnails(orig_img_path: &Path, thumb_dir: &Path) {
             let thumb = img.resize(size, (size as f32 * aspect) as u32, FilterType::Lanczos3);
             let thumb_path = thumbnail_path(orig_img_path, thumb_dir, size);
             if !thumb_path.exists() {
-                let resized = img.resize_exact(size, size, FilterType::Lanczos3);
+                let width = size;
+                let height = (size as f32 * 3.0 / 4.0).round() as u32;
+                let resized = img.resize(width, height, FilterType::Lanczos3);
                 // Save as WebP
                 use std::fs::File;
                 use std::io::Write;
