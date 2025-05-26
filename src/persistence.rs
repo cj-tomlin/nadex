@@ -1,11 +1,27 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub enum NadeType {
+    #[default]
+    Smoke,
+    Flash,
+    Molotov,
+    Grenade,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ImageMeta {
+    pub filename: String,
+    pub nade_type: NadeType,
+    pub notes: String,
+}
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ImageManifest {
-    pub images: HashMap<String, Vec<String>>, // map_name -> Vec<filename>
+    pub images: HashMap<String, Vec<ImageMeta>>, // map_name -> Vec<ImageMeta>
 }
 
 pub fn save_manifest(manifest: &ImageManifest, data_dir: &Path) -> std::io::Result<()> {
