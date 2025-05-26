@@ -16,7 +16,8 @@ pub enum NadeType {
 pub struct ImageMeta {
     pub filename: String,
     pub nade_type: NadeType,
-    pub notes: String,
+    pub notes: String,    // How to throw
+    pub position: String, // Where this nade is for (e.g., "A Main Smoke")
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
