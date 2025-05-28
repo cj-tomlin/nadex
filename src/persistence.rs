@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use strum_macros::EnumIter;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, EnumIter)]
 pub enum NadeType {
     #[default]
     Smoke,
@@ -15,6 +16,7 @@ pub enum NadeType {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ImageMeta {
     pub filename: String,
+    pub map: String,
     pub nade_type: NadeType,
     pub notes: String,    // How to throw
     pub position: String, // Where this nade is for (e.g., "A Main Smoke")
