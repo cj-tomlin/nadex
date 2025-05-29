@@ -93,7 +93,7 @@ pub fn show_detail_modal(state: &mut DetailModalViewState) -> Option<DetailModal
         .interactable(true)
         .show(state.ctx, |ui| {
             egui::Frame::popup(ui.style())
-                .inner_margin(egui::Margin::same(15_i8))
+                .inner_margin(egui::Margin::same(15.0))
                 .show(ui, |ui| {
                     ui.set_max_width(modal_target_width);
                     ui.set_max_height(modal_target_height);
@@ -168,10 +168,7 @@ pub fn show_detail_modal(state: &mut DetailModalViewState) -> Option<DetailModal
                                                 } else {
                                                     &state.selected_image_meta.notes
                                                 };
-                                            ui.add(
-                                                egui::Label::new(notes_text)
-                                                    .wrap_mode(egui::TextWrapMode::Wrap),
-                                            );
+                                            ui.add(egui::Label::new(notes_text).wrap(true));
                                         });
                                 });
                                 ui.end_row();

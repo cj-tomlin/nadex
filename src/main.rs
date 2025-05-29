@@ -1,12 +1,15 @@
-use crate::persistence::{ImageManifest, ImageMeta, NadeType, load_manifest, save_manifest};
+use crate::persistence::{
+    ImageManifest, ImageMeta, MapMeta, NadeType, load_manifest, save_manifest,
+};
 use crate::thumbnail::generate_all_thumbnails;
 use eframe::{NativeOptions, egui};
 use image;
 use image::GenericImageView;
+use log;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::persistence::copy_image_to_data;
 
@@ -14,28 +17,32 @@ mod persistence;
 mod thumbnail;
 mod ui;
 
+const UPLOAD_TIMEOUT_SECONDS: f32 = 30.0;
+const UPLOAD_NOTIFICATION_DURATION_SECONDS: f32 = 5.0;
+
 fn main() -> eframe::Result<()> {
     let mut options = NativeOptions::default();
     options.viewport.maximized = Some(true);
     eframe::run_native(
         "nadex",
         options,
-        Box::new(|_cc| Ok(Box::new(NadexApp::default()))),
+        Box::new(|_cc| Box::new(NadexApp::default())),
     )
 }
 
 struct UploadTask {
     map: String,
-    rx: Receiver<Result<(), String>>,
+    rx: Receiver<Result<ImageMeta, String>>,
     status: UploadStatus,
     finished_time: Option<Instant>,
+    start_time: Instant,
 }
 
 #[derive(PartialEq)]
 enum UploadStatus {
     InProgress,
     Success,
-    Error,
+    Failed(String),
 }
 
 struct NadexApp {
@@ -159,9 +166,9 @@ impl NadexApp {
         notes: String,
     ) {
         let map_name_for_thread = self.current_map.clone();
-        let map_name_for_task = self.current_map.clone(); // For UploadTask
+        let map_name_for_task = self.current_map.clone();
         let data_dir_clone = self.data_dir.clone();
-        let ctx_clone = ctx.clone(); // For repaint requests
+        let ctx_clone = ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
@@ -199,26 +206,23 @@ impl NadexApp {
 
                     let new_image_meta = ImageMeta {
                         filename: dest_path.file_name().unwrap().to_str().unwrap().to_string(),
-                        map: map_name.clone(), // <--- Add this line, using the map_name from the tuple
+                        map: map_name.clone(),
                         nade_type: n_type,
-                        position: pos, // Ensure this is correctly assigned
-                        notes: nts,    // Ensure this is correctly assigned
+                        position: pos,
+                        notes: nts,
                     };
 
                     manifest
                         .images
                         .entry(map_name.clone())
                         .or_default()
-                        .push(new_image_meta);
-                    // Sort images by filename after adding, if desired (optional)
-                    // manifest.images.get_mut(&map_name).unwrap().sort_by(|a, b| a.filename.cmp(&b.filename));
-
+                        .push(new_image_meta.clone());
                     save_manifest(&manifest, &data_dir)
                         .map_err(|e| format!("Failed to save manifest: {}", e))
+                        .map(|_| new_image_meta)
                 });
 
-            if let Err(e) = tx.send(result.map_err(|e_str| e_str)) {
-                // Ensure error is String
+            if let Err(e) = tx.send(result) {
                 eprintln!("Failed to send upload result: {}", e);
             }
             ctx_clone.request_repaint();
@@ -229,6 +233,7 @@ impl NadexApp {
             rx,
             status: UploadStatus::InProgress,
             finished_time: None,
+            start_time: Instant::now(),
         });
     }
 }
@@ -236,33 +241,115 @@ impl NadexApp {
 impl eframe::App for NadexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
-        // Process finished uploads
-        self.uploads.retain_mut(|upload| {
-            match upload.rx.try_recv() {
-                Ok(Ok(())) => {
-                    upload.status = UploadStatus::Success;
-                    upload.finished_time = Some(now);
-                    false // Remove from active uploads, but keep for notification
-                }
-                Ok(Err(e)) => {
-                    eprintln!("Upload error: {}", e);
-                    self.error_message = Some(e);
-                    // Keep for a bit to show error, or handle differently
-                    upload.status = UploadStatus::Error;
-                    upload.finished_time = Some(now); // Mark to remove after showing error
-                    false
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => true, // Keep, still in progress
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => false, // Channel closed, remove
-            }
-        });
 
-        // Remove old success/error notifications
-        self.uploads.retain(|upload| {
-            if let Some(finished) = upload.finished_time {
-                now.duration_since(finished) < Duration::from_secs(5) // Keep for 5 seconds
+        // Process upload tasks: update status from rx, handle timeouts, display notifications, and retain/remove.
+        self.uploads.retain_mut(|upload_task| {
+            // Part 1: Update status from rx channel or timeout if task is InProgress
+            if matches!(upload_task.status, UploadStatus::InProgress) {
+                match upload_task.rx.try_recv() {
+                    Ok(Ok(newly_uploaded_meta)) => {
+                        // Update manifest with the new image meta
+                        self.image_manifest
+                            .images
+                            .entry(newly_uploaded_meta.map.clone())
+                            .or_default()
+                            .push(newly_uploaded_meta.clone());
+
+                        // Ensure map metadata exists
+                        if !self.image_manifest.maps.contains_key(&newly_uploaded_meta.map) {
+                            self.image_manifest.maps.insert(
+                                newly_uploaded_meta.map.clone(),
+                                persistence::MapMeta { last_accessed: SystemTime::now() },
+                            );
+                        }
+                        // self.filter_images_for_current_map(); // TODO: Re-evaluate if needed
+
+                        upload_task.status = UploadStatus::Success;
+                        upload_task.finished_time = Some(now);
+                        log::info!("Upload successful for: {:?}", newly_uploaded_meta.filename);
+                        ctx.request_repaint();
+                    }
+                    Ok(Err(err_msg)) => {
+                        upload_task.status = UploadStatus::Failed(err_msg.clone());
+                        upload_task.finished_time = Some(now);
+                        log::error!("Upload failed: {}", err_msg);
+                        self.error_message = Some(err_msg); // Store for potential display elsewhere
+                        ctx.request_repaint();
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // Still InProgress, check for timeout
+                        if now.duration_since(upload_task.start_time).as_secs_f32() > UPLOAD_TIMEOUT_SECONDS {
+                            upload_task.status = UploadStatus::Failed("Upload timed out".to_string());
+                            upload_task.finished_time = Some(now);
+                            log::warn!("Upload timed out for: {:?}", upload_task.map);
+                            ctx.request_repaint();
+                        }
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        upload_task.status = UploadStatus::Failed("Upload channel disconnected".to_string());
+                        upload_task.finished_time = Some(now);
+                        log::error!("Upload channel disconnected for: {:?}", upload_task.map);
+                        ctx.request_repaint();
+                    }
+                }
+            }
+
+            // Part 2: Display notification and decide retention based on finished_time
+            if let Some(finished_time) = upload_task.finished_time {
+                // Task is finished (Success or Failed)
+                let elapsed_since_finish = now.duration_since(finished_time);
+
+                if elapsed_since_finish.as_secs_f32() > UPLOAD_NOTIFICATION_DURATION_SECONDS {
+                    return false; // Remove after notification display duration
+                } else {
+                    // Display notification
+                    let (text_color, bg_color, message) = match &upload_task.status {
+                        UploadStatus::Success => (
+                            egui::Color32::WHITE,
+                            egui::Color32::from_black_alpha(200),
+                            format!("Upload to '{}' successful!", upload_task.map),
+                        ),
+                        UploadStatus::Failed(e) => (
+                            egui::Color32::WHITE,
+                            egui::Color32::from_black_alpha(200),
+                            format!("Upload to '{}' failed: {}.", upload_task.map, e),
+                        ),
+                        UploadStatus::InProgress => {
+                            // This case (finished_time is Some, but status is InProgress)
+                            // could happen if a timeout occurred in the same frame it was checked.
+                            // The status would be updated to Failed by Part 1, but finished_time also set.
+                            // For robustness, ensure we display something meaningful or rely on the next frame.
+                            // Given Part 1 updates status, this should ideally show Failed if timeout.
+                            // If somehow still InProgress here with finished_time, it's an odd state.
+                            // We'll display based on current status, which Part 1 should have updated.
+                            log::warn!("Notification: Task for '{}' has finished_time but status is InProgress.", upload_task.map);
+                            (
+                                egui::Color32::LIGHT_BLUE, // Defaulting to a noticeable color
+                                egui::Color32::from_black_alpha(180),
+                                format!("Upload '{}': processing...", upload_task.map),
+                            )
+                        }
+                    };
+
+                    let notification_frame = egui::Frame::default()
+                        .fill(bg_color)
+                        .rounding(egui::Rounding::same(8.0))
+                        .inner_margin(egui::Margin::same(12.0));
+
+                    // Use a unique ID for the Area to prevent conflicts
+                    let area_id = format!("upload_notification_{}_{:?}", upload_task.map, upload_task.start_time);
+                    egui::Area::new(area_id.into())
+                        .anchor(egui::Align2::RIGHT_TOP, [-24.0_f32, 24.0_f32])
+                        .show(ctx, |ui| {
+                            notification_frame.show(ui, |ui| {
+                                ui.label(egui::RichText::new(message).color(text_color));
+                            });
+                        });
+                    return true; // Keep: finished but still within display window
+                }
             } else {
-                true // Still in progress or not yet finished
+                // Task is still InProgress (finished_time is None)
+                return true; // Keep
             }
         });
 
@@ -288,14 +375,12 @@ impl eframe::App for NadexApp {
 
         // Main Central Panel
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::central_panel(&*ctx.style()).inner_margin(egui::Margin {
-                    left: 0_i8,
-                    right: 0_i8,
-                    top: 0_i8, // No top margin for central panel after top bar
-                    bottom: 0_i8,
-                }),
-            )
+            .frame(egui::Frame::default().inner_margin(egui::Margin {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+            }))
             .show(ctx, |panel_ui| {
                 // Show upload overlay if any upload is in progress
                 let num_uploads_in_progress = self
@@ -336,7 +421,7 @@ impl eframe::App for NadexApp {
                                 self.detail_view_texture_handle = None;
                             } else {
                                 self.selected_image_for_detail = Some(meta.clone());
-                                self.detail_view_texture_handle = None; // Reset texture handle
+                                self.detail_view_texture_handle = None;
                                 self.load_detail_image(ctx, &meta);
                             }
                         }
@@ -358,57 +443,18 @@ impl eframe::App for NadexApp {
                             ctx, file_path, nade_type, position, notes,
                         );
                         self.show_upload_modal = false;
-                        // Reset app.upload_modal_ fields, as their state is primarily managed by the modal view now
                         self.upload_modal_file = None;
-                        self.upload_modal_nade_type = NadeType::Smoke; // Default
+                        self.upload_modal_nade_type = NadeType::Smoke;
                         self.upload_modal_position = String::new();
                         self.upload_modal_notes = String::new();
                     }
                     ui::upload_modal_view::UploadModalAction::Cancel => {
                         self.show_upload_modal = false;
                         self.upload_modal_file = None;
-                        self.upload_modal_nade_type = NadeType::Smoke; // Default
+                        self.upload_modal_nade_type = NadeType::Smoke;
                         self.upload_modal_position = String::new();
                         self.upload_modal_notes = String::new();
                     }
-                }
-            }
-        }
-
-        // Show floating success/error notifications for uploads
-        for upload_task in &self.uploads {
-            // Iterate over potentially completed tasks
-            if let Some(finished_time) = upload_task.finished_time {
-                let elapsed = now.duration_since(finished_time);
-                if elapsed < Duration::from_secs(5) {
-                    // Show for 5 seconds
-                    let alpha = 1.0_f32 - (elapsed.as_secs_f32() / 5.0_f32);
-                    let (text_color, bg_color, message) = match upload_task.status {
-                        UploadStatus::Success => (
-                            egui::Color32::WHITE,
-                            egui::Color32::from_rgba_unmultiplied(0, 200, 0, (alpha * 192.0) as u8),
-                            format!("Upload to '{}' successful!", upload_task.map),
-                        ),
-                        UploadStatus::Error => (
-                            egui::Color32::WHITE,
-                            egui::Color32::from_rgba_unmultiplied(200, 0, 0, (alpha * 192.0) as u8),
-                            format!("Upload to '{}' failed.", upload_task.map), // Generic message, specific error in self.error_message
-                        ),
-                        UploadStatus::InProgress => continue, // Should not happen if finished_time is Some
-                    };
-
-                    let notification_frame = egui::Frame::new()
-                        .fill(bg_color)
-                        .corner_radius(egui::CornerRadius::same(8_u8))
-                        .inner_margin(egui::Margin::same(12_i8));
-
-                    egui::Area::new(format!("upload_notification_{}", upload_task.map).into())
-                        .anchor(egui::Align2::RIGHT_TOP, [-24.0_f32, 24.0_f32])
-                        .show(ctx, |ui| {
-                            notification_frame.show(ui, |ui| {
-                                ui.label(egui::RichText::new(message).color(text_color));
-                            });
-                        });
                 }
             }
         }
@@ -418,7 +464,7 @@ impl eframe::App for NadexApp {
             let mut view_state = ui::detail_view::DetailModalViewState {
                 ctx,
                 screen_rect: ctx.screen_rect(),
-                selected_image_meta: &selected_meta_clone, // Use the clone
+                selected_image_meta: &selected_meta_clone,
                 detail_view_texture_handle: &self.detail_view_texture_handle,
             };
 
@@ -430,7 +476,7 @@ impl eframe::App for NadexApp {
                     }
                     ui::detail_view::DetailModalAction::RequestEdit(meta_to_edit) => {
                         self.editing_image_meta = Some(meta_to_edit);
-                        self.selected_image_for_detail = None; // Close detail view
+                        self.selected_image_for_detail = None;
                         self.detail_view_texture_handle = None;
                     }
                     ui::detail_view::DetailModalAction::RequestDelete(filename_to_delete) => {
@@ -438,7 +484,7 @@ impl eframe::App for NadexApp {
                     }
                 }
             }
-        } // End of refactored detail modal call
+        }
 
         // --- Edit Image Modal (Refactored) ---
         if let Some(current_editing_meta) = &self.editing_image_meta.clone() {
@@ -475,7 +521,8 @@ impl eframe::App for NadexApp {
                             } else {
                                 self.error_message = None;
                             }
-                            // editing_image_meta and edit_form_data are cleared by show_edit_modal's internal logic
+                            self.editing_image_meta = None;
+                            self.edit_form_data = None;
                         } else {
                             eprintln!(
                                 "Error: Could not find image to update after edit: {}",
@@ -488,7 +535,8 @@ impl eframe::App for NadexApp {
                         }
                     }
                     ui::edit_view::EditModalAction::Cancel => {
-                        // editing_image_meta and edit_form_data are cleared by show_edit_modal's internal logic
+                        self.editing_image_meta = None;
+                        self.edit_form_data = None;
                         self.error_message = None;
                     }
                 }
@@ -497,23 +545,16 @@ impl eframe::App for NadexApp {
 
         // --- Delete Confirmation Modal (Refactored) ---
         if let Some(meta_to_delete) = self.show_delete_confirmation.clone() {
-            // Clone meta to avoid borrow issues
-            // The call to the new modal function:
             if let Some(action) = ui::show_delete_confirmation_modal(self, ctx, &meta_to_delete) {
                 match action {
                     ui::DeleteConfirmationAction::ConfirmDelete => {
                         let filename_to_delete = meta_to_delete.filename.clone();
-                        // Assuming ImageMeta has a 'map' field that stores the map name.
-                        // If not, you'll need to ensure you can get the map name for the image.
-                        // For this example, let's assume meta_to_delete.map is available.
                         let map_name_of_deleted = meta_to_delete.map.clone();
 
-                        // Construct the full path to the image in the data directory
                         let mut image_path_in_data_dir = self.data_dir.clone();
                         image_path_in_data_dir.push(&map_name_of_deleted);
                         image_path_in_data_dir.push(&filename_to_delete);
 
-                        // Delete the main image file
                         if let Err(e) = std::fs::remove_file(&image_path_in_data_dir) {
                             eprintln!(
                                 "Failed to delete image file {}: {}",
@@ -524,22 +565,11 @@ impl eframe::App for NadexApp {
                                 Some(format!("Failed to delete image file: {}", e));
                         }
 
-                        // Delete associated thumbnails
-                        // thumbnail::thumbnail_path expects the *original* image path, not the one in data_dir,
-                        // if thumbnails are generated based on original paths or if the path structure differs.
-                        // For now, assuming image_path_in_data_dir is what's needed for context,
-                        // but this might need adjustment based on how thumbnail_path works.
-                        // Let's assume thumbnail_path can correctly derive paths using image_path_in_data_dir
-                        // and thumb_base_dir.
-                        let thumb_base_dir = self.data_dir.join(".thumbnails");
+                        let thumb_base_dir =
+                            self.data_dir.join(&meta_to_delete.map).join(".thumbnails");
                         for &size in thumbnail::ALLOWED_THUMB_SIZES.iter() {
-                            // We need a consistent way to get the path that was used to *create* the thumbnail
-                            // or a way for thumbnail_path to work with the data_dir path.
-                            // For now, I'll use image_path_in_data_dir, but this is a potential point of failure
-                            // if thumbnail_path expects something else (e.g. an absolute path from original import).
-                            // This was likely correct in your original code if it used full_image_path which was derived similarly.
                             let thumb_path_to_delete = thumbnail::thumbnail_path(
-                                &image_path_in_data_dir, // This was full_image_path in your original code
+                                &image_path_in_data_dir,
                                 &thumb_base_dir,
                                 size,
                             );
@@ -554,10 +584,6 @@ impl eframe::App for NadexApp {
                             }
                         }
 
-                        // Remove from manifest
-                        // Ensure you're removing from the correct map's list of images.
-                        // self.current_map might not be the map of the image being deleted if the user changed maps
-                        // after initiating the delete. It's safer to use map_name_of_deleted.
                         if let Some(images_for_map) =
                             self.image_manifest.images.get_mut(&map_name_of_deleted)
                         {
@@ -571,9 +597,9 @@ impl eframe::App for NadexApp {
                         } else {
                             self.error_message = None;
                         }
-                        self.selected_image_for_detail = None; // Close detail view if open
+                        self.selected_image_for_detail = None;
                         self.detail_view_texture_handle = None;
-                        self.show_delete_confirmation = None; // Close confirmation modal
+                        self.show_delete_confirmation = None;
                     }
                     ui::DeleteConfirmationAction::Cancel => {
                         self.show_delete_confirmation = None;
