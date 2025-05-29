@@ -1,5 +1,5 @@
 use crate::persistence::{
-    ImageManifest, ImageMeta, MapMeta, NadeType, load_manifest, save_manifest,
+    ImageManifest, ImageMeta, NadeType, load_manifest, save_manifest,
 };
 use crate::thumbnail::generate_all_thumbnails;
 use eframe::{NativeOptions, egui};
@@ -8,8 +8,8 @@ use image::GenericImageView;
 use log;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Instant, SystemTime};
 
 use crate::persistence::copy_image_to_data;
 
