@@ -1,9 +1,10 @@
-use crate::NadexApp;
+use crate::app_state::AppState;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 const MAX_THUMB_CACHE_SIZE: usize = 18;
 
+// #[derive(Debug)] // Manually implemented due to TextureHandle
 pub struct ThumbnailCache {
     textures: HashMap<String, (egui::TextureHandle, (u32, u32))>, // Key: thumb_path_str
     order: VecDeque<String>,                                      // For LRU: stores thumb_path_str
@@ -40,7 +41,7 @@ impl ThumbnailCache {
         thumb_storage_dir: &PathBuf,
         target_size: u32,
     ) -> Option<&(egui::TextureHandle, (u32, u32))> {
-        let thumb_path = match crate::thumbnail::get_thumbnail(
+        let thumb_path = match crate::services::persistence_service::PersistenceService::get_thumbnail_disk_path_if_exists(
             image_file_path,
             thumb_storage_dir,
             target_size,
@@ -122,7 +123,7 @@ impl ThumbnailCache {
             return;
         }
 
-        for &size in crate::thumbnail::ALLOWED_THUMB_SIZES.iter() {
+        for &size in crate::services::persistence_service::ALLOWED_THUMB_SIZES.iter() {
             let expected_thumb_filename = format!("{}_{}.{}", file_stem, size, extension);
             let expected_thumb_path = thumb_storage_dir.join(&expected_thumb_filename);
             let expected_thumb_path_str = expected_thumb_path.to_string_lossy().into_owned();
@@ -135,6 +136,16 @@ impl ThumbnailCache {
                 // log::trace!("Thumbnail path {} not found in cache for removal.", expected_thumb_path_str);
             }
         }
+    }
+}
+
+impl std::fmt::Debug for ThumbnailCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThumbnailCache")
+            .field("textures", &self.textures.iter().map(|(k, (_th, dims))| (k, format!("TextureHandle(present), dims: {:?}", dims))).collect::<HashMap<_, _>>())
+            .field("order", &self.order)
+            // .field("max_size", &self.max_size) // Not currently a field
+            .finish()
     }
 }
 
@@ -152,7 +163,7 @@ pub enum ImageGridAction {
 ///
 /// Returns `Option<ImageGridAction>` if an action was taken by the user.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
-pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridAction> {
+pub fn show_image_grid(app: &mut AppState, ui: &mut Ui) -> Option<ImageGridAction> {
     let mut action: Option<ImageGridAction> = None;
 
     // Display image grid for app.current_map

@@ -1,7 +1,8 @@
 // src/services/mod.rs
 
+pub mod persistence_service;
+
 // This file makes the `services` directory a module.
-// We will declare sub-modules here, e.g.:
-// pub mod persistence_service;
+// We will declare other sub-modules here as they are created, e.g.:
 // pub mod thumbnail_service;
 // pub mod image_service;

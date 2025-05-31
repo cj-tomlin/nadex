@@ -1,4 +1,4 @@
-use crate::NadexApp;
+use crate::app_state::AppState;
 use crate::persistence::NadeType;
 use eframe::egui;
 use rfd::FileDialog;
@@ -18,7 +18,7 @@ pub enum UploadModalAction {
 
 #[allow(clippy::too_many_lines)]
 pub fn show_upload_modal(
-    app: &mut NadexApp,
+    app: &mut AppState,
     ctx: &egui::Context,
 ) -> Option<UploadModalAction> {
     let mut action: Option<UploadModalAction> = None;

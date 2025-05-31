@@ -1,12 +1,13 @@
 use egui::Ui;
-use crate::NadexApp;
+use crate::app_state::AppState;
+use crate::app_actions::AppAction;
 use crate::persistence::NadeType;
-use crate::thumbnail::ALLOWED_THUMB_SIZES;
+use crate::services::persistence_service::ALLOWED_THUMB_SIZES;
 
 /// Actions that can be triggered from the top bar.
 #[derive(Debug)]
 pub enum TopBarAction {
-    MapSelected(String),
+    QueueAppAction(AppAction),
     NadeTypeFilterChanged(Option<NadeType>),
     ImageSizeChanged(f32),
     UploadButtonPushed,
@@ -16,7 +17,7 @@ pub enum TopBarAction {
 /// 
 /// Returns `Option<TopBarAction>` if an action was taken by the user.
 pub fn show_top_bar(
-    app_state: &mut NadexApp,
+    app_state: &mut AppState,
     ui: &mut Ui,
 ) -> Option<TopBarAction> {
     let mut action: Option<TopBarAction> = None;
@@ -34,8 +35,8 @@ pub fn show_top_bar(
                         .selectable_value(&mut map_selectable, map_name_str.to_string(), *map_name_str)
                         .changed()
                     {
-                        app_state.current_map = map_selectable.clone();
-                        action = Some(TopBarAction::MapSelected(map_selectable));
+                        // app_state.current_map = map_selectable.clone(); // This will be handled by the action processor
+                        action = Some(TopBarAction::QueueAppAction(AppAction::SelectMap(map_selectable)));
                     }
                 }
             });

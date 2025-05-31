@@ -1,6 +1,6 @@
 use egui::{Context, Window, ComboBox, TextEdit, Id, Align2, Vec2};
 use crate::persistence::NadeType;
-use crate::NadexApp;
+use crate::app_state::AppState;
 use strum::IntoEnumIterator;
 use crate::persistence::ImageMeta;
 
@@ -37,7 +37,7 @@ pub enum EditModalAction {
 /// - `Some(EditModalAction::Cancel)` if the user clicks "Cancel".
 /// - `None` if the modal is still open or not interacted with in a way that closes it.
 pub fn show_edit_modal(
-    app_state: &mut NadexApp,
+    app_state: &mut AppState,
     ctx: &Context,
 ) -> Option<EditModalAction> {
     let mut action: Option<EditModalAction> = None;

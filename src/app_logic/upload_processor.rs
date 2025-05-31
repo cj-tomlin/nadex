@@ -1,7 +1,7 @@
 // src/app_logic/upload_processor.rs
 
-use crate::NadexApp; // To allow `app: &mut crate::NadexApp`
-use crate::persistence::{ImageMeta, save_manifest};
+ // To allow `app: &mut crate::NadexApp`
+use crate::persistence::ImageMeta;
 use eframe::egui;
 use log;
 use std::sync::mpsc::TryRecvError;
@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime}; // Added SystemTime
 pub const UPLOAD_TIMEOUT_SECONDS: f32 = 30.0;
 pub const UPLOAD_NOTIFICATION_DURATION_SECONDS: f32 = 5.0;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum UploadStatus {
     InProgress,
     Success,
@@ -25,6 +25,7 @@ pub enum UploadStatus {
 // might need to be public or pub(crate) depending on how it's used in main.rs.
 // Let's assume for now that NadexApp will only interact with Vec<UploadTask> via this module.
 // However, NadexApp.uploads is Vec<UploadTask>, so UploadTask and UploadStatus need to be visible to main.rs
+#[derive(Debug)]
 pub struct UploadTask {
     pub map: String, // Made fields public for access from main.rs
     pub rx: std::sync::mpsc::Receiver<Result<ImageMeta, String>>, // Made public
@@ -38,11 +39,11 @@ impl UploadTask {
     // For now, direct construction in NadexApp is fine.
 }
 
-pub fn process_upload_tasks(app: &mut NadexApp, ctx: &egui::Context) {
+pub fn process_upload_tasks(app_state: &mut crate::app_state::AppState, ctx: &egui::Context) {
     let mut newly_completed_meta_list: Vec<ImageMeta> = Vec::new();
     let now = Instant::now();
 
-    app.uploads.retain_mut(|upload_task| {
+    app_state.uploads.retain_mut(|upload_task| {
         if upload_task.finished_time.is_none() {
             match upload_task.rx.try_recv() {
                 Ok(Ok(newly_uploaded_meta)) => {
@@ -59,7 +60,7 @@ pub fn process_upload_tasks(app: &mut NadexApp, ctx: &egui::Context) {
                     upload_task.status = UploadStatus::Failed(err_msg.clone());
                     upload_task.finished_time = Some(now);
                     log::error!("Upload failed: {}", err_msg);
-                    app.error_message = Some(err_msg);
+                    app_state.error_message = Some(err_msg);
                     ctx.request_repaint();
                 }
                 Err(TryRecvError::Empty) => {
@@ -135,12 +136,12 @@ pub fn process_upload_tasks(app: &mut NadexApp, ctx: &egui::Context) {
                 "Processing collected uploaded meta for: '{}'",
                 meta.filename
             );
-            app.image_manifest
+            app_state.image_manifest
                 .images
                 .entry(meta.map.clone())
                 .or_default()
                 .push(meta.clone());
-            app.image_manifest
+            app_state.image_manifest
                 .maps
                 .entry(meta.map.clone())
                 .or_insert_with(|| crate::persistence::MapMeta {
@@ -150,15 +151,15 @@ pub fn process_upload_tasks(app: &mut NadexApp, ctx: &egui::Context) {
                 .last_accessed = SystemTime::now();
             manifest_updated = true;
 
-            if meta.map == app.current_map {
+            if meta.map == app_state.current_map {
                 refresh_grid_for_current_map = true;
             }
         }
 
         if manifest_updated {
-            if let Err(e) = save_manifest(&app.image_manifest, &app.data_dir) {
+            if let Err(e) = app_state.persistence_service.save_manifest(&app_state.image_manifest) {
                 log::error!("Error saving manifest after processing uploads: {}", e);
-                app.error_message = Some(format!("Failed to save manifest: {}", e));
+                app_state.error_message = Some(format!("Failed to save manifest: {}", e));
             } else {
                 log::info!("Manifest saved successfully after processing recent uploads.");
             }
@@ -167,9 +168,9 @@ pub fn process_upload_tasks(app: &mut NadexApp, ctx: &egui::Context) {
         if refresh_grid_for_current_map && manifest_updated {
             log::info!(
                 "Grid refresh needed for current map ('{}'), calling filter_images_for_current_map.",
-                app.current_map
+                app_state.current_map
             );
-            app.filter_images_for_current_map(); // This is a method on NadexApp
+            app_state.filter_images_for_current_map();
             ctx.request_repaint();
         } else if manifest_updated {
             ctx.request_repaint();

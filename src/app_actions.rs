@@ -2,7 +2,9 @@
 
 #[derive(Debug, Clone)]
 pub enum AppAction {
-    // Placeholder for application actions
-    // Actions will be defined here starting in Phase 1
-    // Example: SelectMap(String),
+    // --- Map Actions ---
+    SelectMap(String),
+
+    // Add other action categories and specific actions as needed
+    // Example: Image Actions, Modal Actions, etc.
 }

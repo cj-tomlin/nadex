@@ -1,6 +1,6 @@
 use eframe::egui;
 use crate::persistence::ImageMeta;
-use crate::NadexApp; // Assuming NadexApp is pub(crate) or pub
+use crate::app_state::AppState; // Assuming NadexApp is pub(crate) or pub
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeleteConfirmationAction {
@@ -9,7 +9,7 @@ pub enum DeleteConfirmationAction {
 }
 
 pub fn show_delete_confirmation_modal(
-    _app: &NadexApp, // May need &mut if modal has its own transient state to manage within app struct
+    _app: &AppState, // May need &mut if modal has its own transient state to manage within app struct
     ctx: &egui::Context,
     image_to_delete: &ImageMeta,
 ) -> Option<DeleteConfirmationAction> {
