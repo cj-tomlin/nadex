@@ -1,12 +1,14 @@
 // src/app_state.rs
 
 use crate::persistence::{ImageManifest, ImageMeta, NadeType}; // Removed load_manifest import
-use crate::ui::image_grid_view::ThumbnailCache;
+
 use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
 use crate::app_logic::upload_processor::UploadTask; // Assuming UploadTask is pub
 use crate::services::persistence_service::PersistenceService;
 use crate::services::image_service::ImageService;
+use crate::services::thumbnail_service::ThumbnailService;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex}; // Added for Arc and Mutex
 use eframe::egui;
 
 // Make sure EditFormData and UploadTask are public in their respective modules.
@@ -36,7 +38,7 @@ pub struct AppState {
     // User grid preferences
     pub grid_image_size: f32,
     // Window state (future: persist)
-    pub thumbnail_cache: ThumbnailCache,
+
     pub selected_image_for_detail: Option<ImageMeta>,
     pub detail_view_texture_handle: Option<egui::TextureHandle>,
     pub editing_image_meta: Option<ImageMeta>,
@@ -45,8 +47,9 @@ pub struct AppState {
     pub detail_view_error: Option<String>,
 
     // Services
-    pub persistence_service: PersistenceService,
-    pub image_service: ImageService,
+    pub persistence_service: Arc<PersistenceService>,
+    pub image_service: Arc<ImageService>,
+    pub thumbnail_service: Arc<Mutex<ThumbnailService>>,
 }
 
 impl AppState {
@@ -55,9 +58,9 @@ impl AppState {
         data_dir.push("nadex");
         std::fs::create_dir_all(&data_dir).ok(); // Ensure the directory exists
         // Initialize PersistenceService first, as it might be needed for other setup or loading
-        let persistence_service = PersistenceService::new(data_dir.clone())
-            .expect("Failed to initialize PersistenceService. Ensure data directory is accessible.");
-        let image_service = ImageService::new();
+        let persistence_service = Arc::new(PersistenceService::new(data_dir.clone())
+            .expect("Failed to initialize PersistenceService. Ensure data directory is accessible."));
+        let image_service = Arc::new(ImageService::new());
 
         let manifest = persistence_service.load_manifest();
 
@@ -87,15 +90,16 @@ impl AppState {
             error_message: None,
             data_dir, // Comes from initialization above
             grid_image_size: 480.0,
-            thumbnail_cache: ThumbnailCache::new(),
+
             selected_image_for_detail: None,
             detail_view_texture_handle: None,
             editing_image_meta: None,
             edit_form_data: None,
             show_delete_confirmation: None,
             detail_view_error: None,
-            persistence_service, // Add the initialized service
-            image_service, // Add the initialized service
+            persistence_service, // Add the initialized service (now Arc-wrapped)
+            image_service, // Add the initialized service (now Arc-wrapped)
+            thumbnail_service: Arc::new(Mutex::new(ThumbnailService::new())),
         }
     }
 
@@ -124,7 +128,7 @@ impl std::fmt::Debug for AppState {
             .field("error_message", &self.error_message)
             .field("data_dir", &self.data_dir)
             .field("grid_image_size", &self.grid_image_size)
-            .field("thumbnail_cache", &self.thumbnail_cache)
+            .field("thumbnail_service", &self.thumbnail_service)
             .field("selected_image_for_detail", &self.selected_image_for_detail)
             .field("detail_view_texture_handle", &self.detail_view_texture_handle.as_ref().map(|_| "TextureHandle (present)"))
             .field("editing_image_meta", &self.editing_image_meta)

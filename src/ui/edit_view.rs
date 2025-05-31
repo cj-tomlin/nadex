@@ -122,13 +122,25 @@ pub fn show_edit_modal(
         });
 
     // Handle modal closure (either by 'x' button or by Save/Cancel actions)
-    if !open || (action.is_some() && (matches!(action, Some(EditModalAction::Save(_))) || matches!(action, Some(EditModalAction::Cancel)))) {
-        if action.is_none() { // If closed by 'x', it's a Cancel action
-            action = Some(EditModalAction::Cancel);
+    if !open || action.is_some() { // Modal is closing or an action was taken
+        match &action {
+            Some(EditModalAction::Save(_)) => {
+                // For Save, we keep editing_image_meta for handle_save_image_edit,
+                // but clear edit_form_data as it's been captured in the action.
+                // editing_image_meta will be cleared in handle_save_image_edit or if a subsequent cancel occurs.
+                app_state.edit_form_data = None;
+            }
+            Some(EditModalAction::Cancel) => {
+                // For Cancel, clear both.
+                app_state.editing_image_meta = None;
+                app_state.edit_form_data = None;
+            }
+            None => { // Closed with 'x'
+                action = Some(EditModalAction::Cancel);
+                app_state.editing_image_meta = None;
+                app_state.edit_form_data = None;
+            }
         }
-        // Clear editing state from NadexApp as the modal interaction is complete.
-        app_state.editing_image_meta = None;
-        app_state.edit_form_data = None; 
     }
     
     action

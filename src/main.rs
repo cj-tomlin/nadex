@@ -8,6 +8,9 @@ use log::{self, LevelFilter};
 use std::path::PathBuf;
 
 use std::time::Instant;
+use std::sync::Arc;
+use crate::services::persistence_service::PersistenceService;
+use crate::services::thumbnail_service::ThumbnailService;
 
 // persistence::copy_image_to_data is called via persistence::copy_image_to_data_threaded or directly in persistence module
 use crate::app_state::AppState;
@@ -119,7 +122,7 @@ impl NadexApp {
                 position,
                 notes,
             } => {
-                self.copy_image_to_data_threaded(ctx, file_path, nade_type, position, notes);
+                self.copy_image_to_data_threaded(ctx, file_path, nade_type, position, notes, Arc::clone(&self.app_state.persistence_service), Arc::clone(&self.app_state.thumbnail_service));
                 self.app_state.show_upload_modal = false;
                 self.app_state.upload_modal_file = None;
                 self.app_state.upload_modal_nade_type = NadeType::Smoke; // Reset to default
@@ -249,11 +252,17 @@ impl NadexApp {
         nade_type: NadeType,
         position: String,
         notes: String,
+        persistence_service: Arc<PersistenceService>,
+        thumbnail_service: Arc<std::sync::Mutex<ThumbnailService>>,
     ) {
         let map_name_clone = self.app_state.current_map.clone();
-        let data_dir_clone = self.app_state.data_dir.clone();
+        // data_dir_clone is no longer needed here as PersistenceService has its own data_dir.
         let ctx_clone = ctx.clone();
         let path_clone = path.clone(); // Clone path for the thread
+
+        // Clone Arcs for the thread
+        let ps_clone = Arc::clone(&persistence_service);
+        let ts_clone = Arc::clone(&thumbnail_service);
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<ImageMeta, String>>();
 
@@ -277,10 +286,11 @@ impl NadexApp {
                 }
 
                 // 2. Copy the image to the data directory (gets unique filename)
-                let result = crate::services::persistence_service::PersistenceService::copy_image_to_data(
-                    &data_dir_clone, // data_dir is now the first argument
+                //    Now calls the instance method on PersistenceService and passes ThumbnailService.
+                let result = ps_clone.copy_image_to_data(
                     &path_clone,
                     &map_name_clone,
+                    &ts_clone, // Pass the ThumbnailService Arc
                 );
 
                 let (_new_image_path_in_data, unique_filename_str) = match result {
@@ -288,7 +298,7 @@ impl NadexApp {
                     Err(e) => return Err(format!("Failed to copy image '{}' to data directory: {}", path_clone.display(), e)),
                 };
 
-                // 3. Thumbnail generation is now handled by PersistenceService::copy_image_to_data
+                // 3. Thumbnail generation is now handled by PersistenceService::copy_image_to_data via ThumbnailService
 
                 // 4. Construct ImageMeta with the unique filename
                 Ok(ImageMeta {
@@ -328,6 +338,7 @@ impl NadexApp {
         if let Err(e) = self.app_state.persistence_service.delete_image_and_thumbnails(
             &map_name_of_deleted,
             &filename_to_delete,
+            &mut *self.app_state.thumbnail_service.lock().unwrap(), // Pass mutable ref from locked Mutex
         ) {
             log::error!(
                 "Error during deletion via PersistenceService for image '{}' in map '{}': {}",
@@ -335,12 +346,7 @@ impl NadexApp {
                 map_name_of_deleted,
                 e
             );
-            // The service method itself logs details, here we set a general error message for the UI.
-            // We might want to be more specific if the error from the service is rich enough.
             self.app_state.error_message = Some(format!("Failed to delete image files: {}", e));
-            // Decide if we should stop here or continue with manifest/cache update.
-            // For now, let's assume if file deletion fails, we might not want to proceed with manifest changes.
-            // However, the current structure proceeds, so we'll keep that behavior.
         }
 
         log::debug!("[Delete Flow] Meta to delete: {:?}", meta_to_delete);
@@ -376,17 +382,8 @@ impl NadexApp {
             );
         }
 
-        // Clear thumbnail cache for the deleted image
-        self.app_state.thumbnail_cache.remove_image_thumbnails(
-            &filename_to_delete,
-            &map_name_of_deleted,
-            &self.app_state.data_dir,
-        );
-        log::debug!(
-            "Attempted to remove thumbnails for '{}' from map '{}' from the new cache.",
-            filename_to_delete,
-            map_name_of_deleted
-        );
+        // Thumbnail cache and file clearing is now handled by persistence_service.delete_image_and_thumbnails
+        // via the ThumbnailService.
 
         if let Err(e) = self.app_state.persistence_service.save_manifest(&self.app_state.image_manifest) {
             log::error!("Error saving manifest after delete: {}", e);

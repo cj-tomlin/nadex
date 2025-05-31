@@ -2,7 +2,7 @@ use egui::Ui;
 use crate::app_state::AppState;
 use crate::app_actions::AppAction;
 use crate::persistence::NadeType;
-use crate::services::persistence_service::ALLOWED_THUMB_SIZES;
+use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
 
 /// Actions that can be triggered from the top bar.
 #[derive(Debug)]
