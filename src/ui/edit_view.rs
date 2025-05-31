@@ -2,6 +2,7 @@ use egui::{Context, Window, ComboBox, TextEdit, Id, Align2, Vec2};
 use crate::persistence::NadeType;
 use crate::NadexApp;
 use strum::IntoEnumIterator;
+use crate::persistence::ImageMeta;
 
 /// Data structure for the edit form.
 #[derive(Clone, Debug)]
@@ -10,6 +11,17 @@ pub struct EditFormData {
     pub nade_type: NadeType,
     pub position: String,
     pub notes: String,
+}
+
+impl EditFormData {
+    pub fn from_meta(meta: &ImageMeta) -> Self {
+        Self {
+            filename: meta.filename.clone(),
+            nade_type: meta.nade_type,
+            position: meta.position.clone(),
+            notes: meta.notes.clone(),
+        }
+    }
 }
 
 /// Actions that can be taken from the edit modal.

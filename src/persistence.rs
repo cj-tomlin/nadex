@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use strum_macros::EnumIter;
+use chrono::Utc;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, EnumIter)]
 pub enum NadeType {
@@ -14,7 +15,7 @@ pub enum NadeType {
     Grenade,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageMeta {
     pub filename: String,
     pub map: String,
@@ -56,10 +57,21 @@ pub fn ensure_map_dir(data_dir: &Path, map: &str) -> std::io::Result<PathBuf> {
     Ok(map_dir)
 }
 
-pub fn copy_image_to_data(src: &Path, data_dir: &Path, map: &str) -> std::io::Result<PathBuf> {
+pub fn copy_image_to_data(src: &Path, data_dir: &Path, map: &str) -> std::io::Result<(PathBuf, String)> {
     let map_dir = ensure_map_dir(data_dir, map)?;
-    let filename = src.file_name().unwrap();
-    let dest = map_dir.join(filename);
+    
+    let original_filename = src.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid source path"))?;
+    let stem = Path::new(original_filename).file_stem().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Could not extract file stem"))?.to_string_lossy();
+    let extension = Path::new(original_filename).extension().map_or_else(|| "", |ext| ext.to_str().unwrap_or(""));
+
+    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f").to_string(); // YYYYMMDDHHMMSSmmm (milliseconds)
+    let unique_filename_str = if extension.is_empty() {
+        format!("{}_{}", stem, timestamp)
+    } else {
+        format!("{}_{}.{}", stem, timestamp, extension)
+    };
+
+    let dest = map_dir.join(&unique_filename_str);
     fs::copy(src, &dest)?;
-    Ok(dest)
+    Ok((dest, unique_filename_str))
 }
