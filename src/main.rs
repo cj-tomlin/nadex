@@ -283,7 +283,7 @@ impl NadexApp {
                     &map_name_clone,
                 );
 
-                let (new_image_path_in_data, unique_filename_str) = match result {
+                let (_new_image_path_in_data, unique_filename_str) = match result {
                     Ok((path, filename)) => (path, filename),
                     Err(e) => return Err(format!("Failed to copy image '{}' to data directory: {}", path_clone.display(), e)),
                 };
