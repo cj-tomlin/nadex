@@ -5,6 +5,7 @@ use crate::ui::image_grid_view::ThumbnailCache;
 use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
 use crate::app_logic::upload_processor::UploadTask; // Assuming UploadTask is pub
 use crate::services::persistence_service::PersistenceService;
+use crate::services::image_service::ImageService;
 use std::path::PathBuf;
 use eframe::egui;
 
@@ -45,6 +46,7 @@ pub struct AppState {
 
     // Services
     pub persistence_service: PersistenceService,
+    pub image_service: ImageService,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
         // Initialize PersistenceService first, as it might be needed for other setup or loading
         let persistence_service = PersistenceService::new(data_dir.clone())
             .expect("Failed to initialize PersistenceService. Ensure data directory is accessible.");
+        let image_service = ImageService::new();
 
         let manifest = persistence_service.load_manifest();
 
@@ -92,19 +95,15 @@ impl AppState {
             show_delete_confirmation: None,
             detail_view_error: None,
             persistence_service, // Add the initialized service
+            image_service, // Add the initialized service
         }
     }
 
     pub fn filter_images_for_current_map(&mut self) {
-        self.current_map_images = self
-            .image_manifest
-            .images
-            .get(&self.current_map)
-            .map_or_else(Vec::new, |images_for_map| {
-                let mut sorted_images = images_for_map.clone();
-                sorted_images.sort_by(|a, b| a.filename.cmp(&b.filename));
-                sorted_images
-            });
+        self.current_map_images = self.image_service.get_images_for_map_sorted(
+            &self.image_manifest, 
+            &self.current_map
+        );
     }
 }
 

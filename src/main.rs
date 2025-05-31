@@ -406,47 +406,57 @@ impl NadexApp {
     }
 
     fn handle_save_image_edit(
-        &mut self,
-        form_data_to_save: ui::edit_view::EditFormData,
-        ctx: &egui::Context,
-    ) {
-        if let Some(image_to_update) = self
-            .app_state.image_manifest
-            .images
-            .values_mut()
-            .flatten()
-            .find(|img| img.filename == form_data_to_save.filename)
-        {
-            image_to_update.nade_type = form_data_to_save.nade_type;
-            image_to_update.position = form_data_to_save.position.clone();
-            image_to_update.notes = form_data_to_save.notes.clone();
-
-            if let Err(e) = self.app_state.persistence_service.save_manifest(&self.app_state.image_manifest) {
-                log::error!("Error saving manifest after edit: {}", e);
-                self.app_state.error_message = Some(format!("Failed to save changes: {}", e));
-            } else {
-                log::info!(
-                    "Manifest saved successfully after editing '{}'.",
-                    form_data_to_save.filename
-                );
-                self.app_state.error_message = None; // Clear error on successful save
+    &mut self,
+    form_data_to_save: ui::edit_view::EditFormData,
+    ctx: &egui::Context,
+) {
+    // Get the original metadata, which includes the map name
+    if let Some(original_meta) = self.app_state.editing_image_meta.clone() {
+        match self.app_state.image_service.update_image_metadata(
+            &mut self.app_state.image_manifest,
+            &original_meta, // Pass the original meta to locate the image in the correct map
+            &form_data_to_save,
+        ) {
+            Ok(_) => {
+                // Manifest in memory is updated, now save it to disk
+                if let Err(e) = self.app_state.persistence_service.save_manifest(&self.app_state.image_manifest) {
+                    log::error!("Error saving manifest after edit: {}", e);
+                    self.app_state.error_message = Some(format!("Failed to save changes: {}", e));
+                } else {
+                    log::info!(
+                        "Manifest saved successfully after editing '{}'.",
+                        form_data_to_save.filename
+                    );
+                    self.app_state.error_message = None; // Clear error on successful save
+                }
             }
-            self.app_state.editing_image_meta = None;
-            self.app_state.edit_form_data = None;
-            self.filter_images_for_current_map(); // Refresh the view
-            ctx.request_repaint();
-        } else {
-            log::error!(
-                "Error: Could not find image to update after edit: {}",
-                form_data_to_save.filename
-            );
-            self.app_state.error_message = Some(format!(
-                "Failed to find image {} to update.",
-                form_data_to_save.filename
-            ));
+            Err(e) => {
+                log::error!("Error updating image metadata: {}", e);
+                self.app_state.error_message = Some(format!("Failed to update image: {}", e));
+            }
         }
-    } // End of handle_save_image_edit
-} // End of impl NadexApp
+
+        // Common cleanup regardless of success or failure of the service call or save
+        self.app_state.editing_image_meta = None;
+        self.app_state.edit_form_data = None;
+        self.filter_images_for_current_map(); // Refresh the view
+        ctx.request_repaint();
+
+    } else {
+        log::error!(
+            "Critical Error: editing_image_meta was None when trying to save edit for {}. This should not happen.",
+            form_data_to_save.filename
+        );
+        self.app_state.error_message = Some(format!(
+            "Internal error: No image was being edited. Please try again."
+        ));
+        // Also clear edit state here to prevent further issues
+        self.app_state.editing_image_meta = None;
+        self.app_state.edit_form_data = None;
+    }
+}
+} // Added to close impl NadexApp
+
 
 impl eframe::App for NadexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
