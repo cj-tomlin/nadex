@@ -60,7 +60,14 @@ impl AppState {
         // Initialize PersistenceService first, as it might be needed for other setup or loading
         let persistence_service = Arc::new(PersistenceService::new(data_dir.clone())
             .expect("Failed to initialize PersistenceService. Ensure data directory is accessible."));
-        let image_service = Arc::new(ImageService::new());
+        
+        // Initialize ThumbnailService before ImageService, as ImageService might depend on it.
+        let thumbnail_service = Arc::new(Mutex::new(ThumbnailService::new()));
+
+        // Clone Arcs for ImageService initialization
+        let ps_clone_for_is = Arc::clone(&persistence_service);
+        let ts_clone_for_is = Arc::clone(&thumbnail_service);
+        let image_service = Arc::new(ImageService::new(ps_clone_for_is, ts_clone_for_is));
 
         let manifest = persistence_service.load_manifest();
 
@@ -99,7 +106,7 @@ impl AppState {
             detail_view_error: None,
             persistence_service, // Add the initialized service (now Arc-wrapped)
             image_service, // Add the initialized service (now Arc-wrapped)
-            thumbnail_service: Arc::new(Mutex::new(ThumbnailService::new())),
+            thumbnail_service, // Use the thumbnail_service initialized earlier
         }
     }
 

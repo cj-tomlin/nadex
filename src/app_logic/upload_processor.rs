@@ -2,10 +2,11 @@
 
  // To allow `app: &mut crate::NadexApp`
 use crate::persistence::ImageMeta;
+use crate::services::image_service::ImageServiceError; // Added for the new channel type
 use eframe::egui;
 use log;
 use std::sync::mpsc::TryRecvError;
-use std::time::{Instant, SystemTime}; // Added SystemTime
+use std::time::{Instant, SystemTime};
 
 pub const UPLOAD_TIMEOUT_SECONDS: f32 = 30.0;
 pub const UPLOAD_NOTIFICATION_DURATION_SECONDS: f32 = 5.0;
@@ -28,7 +29,7 @@ pub enum UploadStatus {
 #[derive(Debug)]
 pub struct UploadTask {
     pub map: String, // Made fields public for access from main.rs
-    pub rx: std::sync::mpsc::Receiver<Result<ImageMeta, String>>, // Made public
+    pub rx: std::sync::mpsc::Receiver<Result<ImageMeta, ImageServiceError>>, // Updated to ImageServiceError
     pub status: UploadStatus, // Made public
     pub finished_time: Option<Instant>, // Made public
     pub start_time: Instant, // Made public
@@ -56,7 +57,8 @@ pub fn process_upload_tasks(app_state: &mut crate::app_state::AppState, ctx: &eg
                     upload_task.status = UploadStatus::Success;
                     upload_task.finished_time = Some(now);
                 }
-                Ok(Err(err_msg)) => {
+                Ok(Err(image_service_err)) => {
+                    let err_msg = format!("{}", image_service_err);
                     upload_task.status = UploadStatus::Failed(err_msg.clone());
                     upload_task.finished_time = Some(now);
                     log::error!("Upload failed: {}", err_msg);
