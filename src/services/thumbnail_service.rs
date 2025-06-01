@@ -1,6 +1,42 @@
 // src/services/thumbnail_service.rs
 
 use std::collections::{HashMap, VecDeque};
+use std::error::Error as StdError; // Alias for clarity
+
+#[derive(Debug)]
+pub enum ThumbnailServiceError {
+    DirectoryCreationFailed(PathBuf, std::io::Error),
+    ImageOpenFailed(PathBuf, image::ImageError),
+    ImageSaveFailed(PathBuf, image::ImageError),
+    FileCreateFailed(PathBuf, std::io::Error),
+    // Consider adding PathConversionError if PathBuf manipulations can fail significantly
+}
+
+impl fmt::Display for ThumbnailServiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ThumbnailServiceError::DirectoryCreationFailed(path, err) => 
+                write!(f, "Failed to create thumbnail directory {}: {}", path.display(), err),
+            ThumbnailServiceError::ImageOpenFailed(path, err) => 
+                write!(f, "Failed to open image {} for thumbnail generation: {}", path.display(), err),
+            ThumbnailServiceError::ImageSaveFailed(path, err) => 
+                write!(f, "Failed to save thumbnail {}: {}", path.display(), err),
+            ThumbnailServiceError::FileCreateFailed(path, err) =>
+                write!(f, "Failed to create thumbnail file {}: {}", path.display(), err),
+        }
+    }
+}
+
+impl StdError for ThumbnailServiceError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            ThumbnailServiceError::DirectoryCreationFailed(_, err) => Some(err),
+            ThumbnailServiceError::ImageOpenFailed(_, err) => Some(err),
+            ThumbnailServiceError::ImageSaveFailed(_, err) => Some(err),
+            ThumbnailServiceError::FileCreateFailed(_, err) => Some(err),
+        }
+    }
+}
 use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs;
@@ -182,12 +218,11 @@ impl ThumbnailService {
         data_dir: &Path, 
         map_name: &str, 
         original_image_path_in_data: &Path
-    ) -> Result<(), String> {
+    ) -> Result<(), ThumbnailServiceError> {
         let thumb_dir = data_dir.join(map_name).join(".thumbnails");
         if let Err(e) = fs::create_dir_all(&thumb_dir) {
-            let err_msg = format!("Failed to create thumbnail directory {}: {}", thumb_dir.display(), e);
-            log::error!("ThumbnailService: {}", err_msg);
-            return Err(err_msg);
+            log::error!("ThumbnailService: Failed to create thumbnail directory {}: {}", thumb_dir.display(), e);
+            return Err(ThumbnailServiceError::DirectoryCreationFailed(thumb_dir.clone(), e));
         }
 
         match image::open(original_image_path_in_data) {
@@ -209,7 +244,7 @@ impl ThumbnailService {
                                         thumb_path.display(),
                                         e
                                     );
-                                    // Continue to try other sizes
+                                    return Err(ThumbnailServiceError::ImageSaveFailed(thumb_path.clone(), e));
                                 }
                             }
                             Err(e) => {
@@ -218,7 +253,7 @@ impl ThumbnailService {
                                     thumb_path.display(),
                                     e
                                 );
-                                // Continue to try other sizes
+                                return Err(ThumbnailServiceError::FileCreateFailed(thumb_path.clone(), e));
                             }
                         }
                     }
@@ -226,13 +261,12 @@ impl ThumbnailService {
                 Ok(())
             }
             Err(e) => {
-                let err_msg = format!(
+                log::error!(
                     "ThumbnailService: Failed to open image {} for thumbnail generation: {}",
                     original_image_path_in_data.display(),
                     e
                 );
-                log::error!("{}", err_msg);
-                Err(err_msg)
+                Err(ThumbnailServiceError::ImageOpenFailed(original_image_path_in_data.to_path_buf(), e))
             }
         }
     }
