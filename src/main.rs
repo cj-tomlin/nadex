@@ -191,12 +191,29 @@ impl eframe::App for NadexApp {
         // --- Process AppActions ---
 
         // Check for results from background upload threads
+        let mut received_actions_from_thread = false; // Initialize flag
         while let Ok(action_from_thread) = self.app_state.upload_result_receiver.try_recv() {
             log::info!(
                 "Received action from background thread: {:?}",
                 action_from_thread
             );
             self.action_queue.push(action_from_thread);
+            received_actions_from_thread = true; // Set flag
+        }
+
+        if received_actions_from_thread {
+            ctx.request_repaint(); // Request repaint if actions were received
+        }
+
+        // Process results from thumbnail loading thread
+        if self
+            .app_state
+            .thumbnail_service
+            .lock()
+            .unwrap()
+            .process_background_loads(ctx)
+        {
+            ctx.request_repaint(); // Request repaint if new thumbnails were loaded
         }
 
         let actions_to_process = self.action_queue.drain(..).collect::<Vec<_>>();
@@ -231,50 +248,32 @@ impl eframe::App for NadexApp {
                         let map_name_clone = map_name.clone();
                         // nade_type, position, notes are Copy or easily clonable
 
+                        let initial_manifest_clone = self.app_state.image_manifest.clone();
                         std::thread::spawn(move || {
                             log::info!(
-                                "Background thread: Starting upload for {:?}",
+                                "Background thread: Delegating to ImageService.orchestrate_full_upload_process for file: {:?}",
                                 file_path_clone
                             );
-                            let upload_result = image_service_clone.upload_image(
-                                &file_path_clone,
-                                &map_name_clone,
+                            image_service_clone.orchestrate_full_upload_process(
+                                file_path_clone,
+                                map_name_clone,
                                 nade_type,
-                                &position,
-                                &notes,
+                                position,
+                                notes,
+                                initial_manifest_clone, // Use the manifest cloned outside the thread
+                                sender_clone,
                             );
-
-                            let completion_action = match upload_result {
-                                Ok(new_image_meta) => {
-                                    log::info!(
-                                        "Background thread: Image upload successful: {:?}",
-                                        new_image_meta.filename
-                                    );
-                                    AppAction::UploadSucceededBackgroundTask {
-                                        new_image_meta,
-                                        map_name: map_name_clone,
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("Background thread: Image upload failed: {}", e);
-                                    AppAction::UploadFailed {
-                                        error_message: Some(format!(
-                                            "Image processing failed: {}",
-                                            e
-                                        )),
-                                    }
-                                }
-                            };
-
-                            if let Err(e) = sender_clone.send(completion_action) {
-                                log::error!(
-                                    "Background thread: Failed to send upload completion action: {}",
-                                    e
-                                );
-                            }
+                            // ImageService::orchestrate_full_upload_process will send
+                            // AppAction::UploadSucceededBackgroundTask or AppAction::UploadFailed
+                            // via the sender_clone. No need to send actions from this thread.
                         });
 
                         // The UI thread continues, spinner is managed by SetProcessingUpload actions.
+                        ctx.request_repaint();
+                    }
+                    AppAction::SetProcessingUpload(is_processing) => {
+                        log::info!("Setting is_processing_upload to: {}", is_processing);
+                        self.app_state.is_processing_upload = is_processing;
                         ctx.request_repaint();
                     }
                     AppAction::UploadSucceededBackgroundTask {
@@ -287,55 +286,31 @@ impl eframe::App for NadexApp {
                             map_name
                         );
                         // Update in-memory manifest
+                        let is_current_map = map_name == self.app_state.current_map; // Compare before map_name is moved
+
                         self.app_state
                             .image_manifest
                             .images
-                            .entry(map_name)
+                            .entry(map_name) // map_name is moved here
                             .or_default()
-                            .push(new_image_meta);
-                        self.filter_images_for_current_map();
-                        self.app_state.error_message = None; // Clear previous errors, image part was fine
+                            .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
 
-                        // Now, spawn a new thread to save the manifest
-                        let persistence_service_clone =
-                            Arc::clone(&self.app_state.persistence_service);
-                        let manifest_clone = self.app_state.image_manifest.clone(); // Clone the current manifest state
-                        let sender_clone = self.app_state.upload_result_sender.clone();
+                        // If the uploaded image is for the currently viewed map, update current_map_images directly.
+                        if is_current_map {
+                            self.app_state.current_map_images.push(new_image_meta); // Original new_image_meta is moved here
+                            self.app_state
+                                .current_map_images
+                                .sort_by(|a, b| a.filename.cmp(&b.filename));
+                        } else {
+                            // If the upload was for a different map, filter_images_for_current_map will handle it
+                            // when that map is next selected. The original new_image_meta is dropped here if not used,
+                            // which is fine as it's already cloned into the manifest.
+                        }
+                        self.app_state.error_message = None; // Clear any previous error, UI part was fine.
 
-                        std::thread::spawn(move || {
-                            log::info!("Background manifest save thread: Starting save.");
-                            let save_result =
-                                persistence_service_clone.save_manifest(&manifest_clone);
-                            let manifest_completion_action = match save_result {
-                                Ok(_) => {
-                                    log::info!("Background manifest save thread: Save successful.");
-                                    AppAction::ManifestSaveCompleted {
-                                        success: true,
-                                        error_message: None,
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Background manifest save thread: Save failed: {}",
-                                        e
-                                    );
-                                    AppAction::ManifestSaveCompleted {
-                                        success: false,
-                                        error_message: Some(format!(
-                                            "Failed to save manifest: {}",
-                                            e
-                                        )),
-                                    }
-                                }
-                            };
-                            if let Err(e) = sender_clone.send(manifest_completion_action) {
-                                log::error!(
-                                    "Background manifest save thread: Failed to send completion action: {}",
-                                    e
-                                );
-                            }
-                        });
-                        // Spinner remains active until manifest save attempt is complete.
+                        // Manifest saving is now orchestrated by ImageService after this action is sent.
+                        // NadexApp only needs to update its in-memory state here.
+                        // A repaint is good to reflect the new image in the grid immediately.
                         ctx.request_repaint();
                     }
                     AppAction::UploadFailed { error_message } => {
@@ -432,23 +407,22 @@ impl eframe::App for NadexApp {
                         ctx.request_repaint();
                     }
                     AppAction::DeleteConfirm => {
-                        if let Some(meta_to_delete) = self.app_state.show_delete_confirmation.clone() {
+                        if let Some(meta_to_delete) =
+                            self.app_state.show_delete_confirmation.clone()
+                        {
                             // It's important that handle_confirm_image_delete also sets show_delete_confirmation to None.
                             // Or, we do it here explicitly before/after the call if it doesn't.
                             // Based on old comment, handle_confirm_image_delete handles this.
                             self.handle_confirm_image_delete(meta_to_delete, ctx);
                         } else {
                             // This case should ideally not happen if DeleteConfirm is only sent when modal is shown.
-                            log::warn!("DeleteConfirm action received but no image was marked for deletion.");
+                            log::warn!(
+                                "DeleteConfirm action received but no image was marked for deletion."
+                            );
                         }
                     }
                     AppAction::DeleteCancel => {
                         self.app_state.show_delete_confirmation = None;
-                        ctx.request_repaint();
-                    }
-                    AppAction::SetProcessingUpload(is_processing) => {
-                        log::info!("Setting is_processing_upload to: {}", is_processing);
-                        self.app_state.is_processing_upload = is_processing;
                         ctx.request_repaint();
                     }
                 } // End match action
@@ -499,7 +473,8 @@ impl eframe::App for NadexApp {
 
         // --- Upload Modal ---
         if self.app_state.show_upload_modal {
-            self.upload_modal.show(ctx, &mut self.app_state, &mut self.action_queue);
+            self.upload_modal
+                .show(ctx, &mut self.app_state, &mut self.action_queue);
         }
 
         // --- Edit Image Modal (Refactored) ---

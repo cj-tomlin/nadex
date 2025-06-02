@@ -1,15 +1,15 @@
 // Placeholder for the image detail view UI logic.
 // Code from main.rs related to the detail modal will be moved here.
 
-use egui;
+use crate::app_actions::AppAction;
 use crate::app_state::AppState; // Added AppState
-use crate::app_actions::AppAction; // Added AppAction
+use egui; // Added AppAction
 
 /// Shows the image detail modal.
 pub fn show_detail_modal(
-    app_state: &mut AppState, 
-    ui: &mut egui::Ui, 
-    action_queue: &mut Vec<AppAction>
+    app_state: &mut AppState,
+    ui: &mut egui::Ui,
+    action_queue: &mut Vec<AppAction>,
 ) {
     // This modal should only be called if app_state.selected_image_for_detail is Some.
     // We'll unwrap it here, assuming the caller guarantees this.
@@ -19,7 +19,6 @@ pub fn show_detail_modal(
     };
     let detail_view_texture_handle = &app_state.detail_view_texture_handle;
     let screen_rect = ui.ctx().screen_rect(); // Get screen_rect from ui context
-
 
     let default_modal_width = screen_rect.width() * 0.5;
     let default_modal_height = screen_rect.height() * 0.5;
@@ -89,9 +88,10 @@ pub fn show_detail_modal(
                     ui.set_min_height(modal_target_height.min(screen_rect.height() * 0.9));
 
                     ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                        if ui.button(" X ").on_hover_text("Close (Esc)").clicked() 
-                           || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape))
-                        { // Close button & Esc key
+                        if ui.button(" X ").on_hover_text("Close (Esc)").clicked()
+                            || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            // Close button & Esc key
                             action_queue.push(AppAction::DetailModalClose);
                         }
                     });
@@ -150,12 +150,12 @@ pub fn show_detail_modal(
                                         .auto_shrink([false, true])
                                         .max_height(60.0)
                                         .show(ui, |ui| {
-                                            let notes_text =
-                                                if selected_image_meta.notes.is_empty() {
-                                                    "[No Notes]"
-                                                } else {
-                                                    &selected_image_meta.notes
-                                                };
+                                            let notes_text = if selected_image_meta.notes.is_empty()
+                                            {
+                                                "[No Notes]"
+                                            } else {
+                                                &selected_image_meta.notes
+                                            };
                                             ui.add(egui::Label::new(notes_text).wrap(true));
                                         });
                                 });

@@ -1,16 +1,18 @@
-use std::sync::{Arc, Mutex};
+use crate::app_actions::AppAction; // For sending actions
 use crate::persistence::{ImageManifest, ImageMeta, NadeType};
 use crate::services::persistence_service::PersistenceService;
-use crate::services::thumbnail_service::{ThumbnailService, ThumbnailServiceError};
 use crate::services::persistence_service::PersistenceServiceError;
+use crate::services::thumbnail_service::ThumbnailService;
 use crate::ui::edit_view::EditFormData; // Ensure EditFormData is in scope
-use std::path::Path;
 use image::{self, GenericImageView}; // For image dimension validation and GenericImageView trait
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex}; // For sender type
 
 #[derive(Debug)]
 pub enum ImageServiceError {
     Persistence(std::io::Error),
-    Thumbnail(ThumbnailServiceError),
     NotFound(String),
     InputError(String),
     Other(String),
@@ -20,7 +22,6 @@ impl std::fmt::Display for ImageServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImageServiceError::Persistence(io_err) => write!(f, "Persistence error: {}", io_err),
-            ImageServiceError::Thumbnail(msg) => write!(f, "Thumbnail generation error: {}", msg),
             ImageServiceError::NotFound(msg) => write!(f, "Not found: {}", msg),
             ImageServiceError::InputError(msg) => write!(f, "Invalid input: {}", msg),
             ImageServiceError::Other(msg) => write!(f, "Image service error: {}", msg),
@@ -32,9 +33,10 @@ impl From<PersistenceServiceError> for ImageServiceError {
     fn from(err: PersistenceServiceError) -> Self {
         match err {
             PersistenceServiceError::IoError(io_err) => ImageServiceError::Persistence(io_err),
-            PersistenceServiceError::ThumbnailGenerationFailed(thumb_err) => ImageServiceError::Thumbnail(thumb_err),
             PersistenceServiceError::InvalidInput(msg) => ImageServiceError::InputError(msg),
-            PersistenceServiceError::SerializationError(msg) => ImageServiceError::Other(format!("Manifest serialization error: {}", msg)),
+            PersistenceServiceError::SerializationError(msg) => {
+                ImageServiceError::Other(format!("Manifest serialization error: {}", msg))
+            }
         }
     }
 }
@@ -54,9 +56,9 @@ pub struct ImageService {
 impl ImageService {
     pub fn new(
         persistence_service: Arc<PersistenceService>,
-        thumbnail_service: Arc<Mutex<ThumbnailService>> // Added thumbnail_service param
+        thumbnail_service: Arc<Mutex<ThumbnailService>>, // Added thumbnail_service param
     ) -> Self {
-        Self { 
+        Self {
             persistence_service,
             thumbnail_service, // Initialize thumbnail_service
         }
@@ -92,20 +94,20 @@ impl ImageService {
         if original_image_meta.filename != form_data.filename {
             return Err(ImageServiceError::InputError(format!(
                 "Filename mismatch: original '{}', form data '{}'. Cannot update.",
-                original_image_meta.filename,
-                form_data.filename
+                original_image_meta.filename, form_data.filename
             )));
         }
 
         if let Some(images_in_map) = manifest.images.get_mut(map_name) {
             if let Some(image_to_update) = images_in_map
                 .iter_mut()
-                .find(|img| img.filename == original_image_meta.filename) // Find by original filename
+                .find(|img| img.filename == original_image_meta.filename)
+            // Find by original filename
             {
                 image_to_update.nade_type = form_data.nade_type;
                 image_to_update.position = form_data.position.clone();
                 image_to_update.notes = form_data.notes.clone();
-                
+
                 // After updating in-memory manifest, save it to disk
                 self.persistence_service.save_manifest(manifest)?;
                 Ok(())
@@ -118,7 +120,8 @@ impl ImageService {
             }
         } else {
             Err(ImageServiceError::NotFound(format!(
-                "Map '{}' not found in manifest.", map_name
+                "Map '{}' not found in manifest.",
+                map_name
             )))
         }
     }
@@ -156,9 +159,11 @@ impl ImageService {
 
         // 2. Copy image to data directory and get unique filename.
         //    This also triggers thumbnail generation via PersistenceService.
-        let (_dest_path, unique_filename) = self
-            .persistence_service
-            .copy_image_to_data(original_file_path, map_name, &self.thumbnail_service)?;
+        let (_dest_path, unique_filename) = self.persistence_service.copy_image_to_data(
+            original_file_path,
+            map_name,
+            &self.thumbnail_service,
+        )?;
 
         // 3. Create ImageMeta
         let new_image_meta = ImageMeta {
@@ -173,6 +178,132 @@ impl ImageService {
         Ok(new_image_meta)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn orchestrate_full_upload_process(
+        self: Arc<Self>, // Take Arc<Self> to move into the thread
+        file_path: PathBuf,
+        map_name: String,
+        nade_type: NadeType,
+        position: String,
+        notes: String,
+        initial_manifest: ImageManifest, // Pass the current manifest state
+        app_action_sender: mpsc::Sender<AppAction>,
+    ) {
+        log::info!(
+            "ImageService: Orchestrating full upload for map: {}, file: {:?}",
+            map_name,
+            file_path
+        );
+
+        let self_clone_for_save = Arc::clone(&self); // Clone self for the potential second thread
+        let app_action_sender_clone_for_save = app_action_sender.clone(); // Clone sender for the potential second thread
+
+        // Spawn the first background thread for image processing.
+        std::thread::spawn(move || {
+            log::info!(
+                "ImageService Orchestration(T1): Starting image processing for {:?}",
+                file_path
+            );
+
+            let upload_result = self.upload_image(
+                &file_path, &map_name, // map_name is borrowed here
+                nade_type, &position, &notes,
+            );
+
+            match upload_result {
+                Ok(new_image_meta) => {
+                    log::info!(
+                        "ImageService Orchestration(T1): Image processing successful: {:?}",
+                        new_image_meta.filename
+                    );
+
+                    // Send action to UI to update its in-memory manifest immediately
+                    let ui_update_action = AppAction::UploadSucceededBackgroundTask {
+                        new_image_meta: new_image_meta.clone(), // Clone for UI action
+                        map_name: map_name.clone(),             // Clone map_name for UI action
+                    };
+                    if let Err(e) = app_action_sender.send(ui_update_action) {
+                        log::error!(
+                            "ImageService Orchestration(T1): Failed to send UploadSucceededBackgroundTask: {}",
+                            e
+                        );
+                        // Even if this send fails, proceed to try saving the manifest
+                    }
+
+                    // Prepare manifest for saving
+                    let manifest_for_saving =
+                        initial_manifest.clone_and_add(new_image_meta, &map_name);
+
+                    log::info!("ImageService Orchestration(T1): Triggering manifest save.");
+                    // Call save_manifest_async (which spawns its own thread)
+                    self_clone_for_save.save_manifest_async(
+                        manifest_for_saving,
+                        app_action_sender_clone_for_save, // Use the cloned sender
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "ImageService Orchestration(T1): Image processing failed: {}",
+                        e
+                    );
+                    let fail_action = AppAction::UploadFailed {
+                        error_message: Some(format!(
+                            "Image processing failed (ImageService): {}",
+                            e
+                        )),
+                    };
+                    if let Err(send_err) = app_action_sender.send(fail_action) {
+                        log::error!(
+                            "ImageService Orchestration(T1): Failed to send UploadFailed action: {}",
+                            send_err
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn save_manifest_async(
+        self: Arc<Self>,                 // Take Arc<Self> to move into the thread
+        manifest_to_save: ImageManifest, // Pass the manifest by value (it's cloned by caller)
+        app_action_sender: mpsc::Sender<AppAction>,
+    ) {
+        log::info!("ImageService: Queuing background manifest save.");
+        // self (Arc<ImageService>) is moved into the thread.
+        // persistence_service is accessed via self.
+        std::thread::spawn(move || {
+            log::info!("ImageService Background(2): Starting manifest save.");
+            let save_result = self.persistence_service.save_manifest(&manifest_to_save);
+
+            let manifest_completion_action = match save_result {
+                Ok(_) => {
+                    log::info!("ImageService Background(2): Manifest save successful.");
+                    AppAction::ManifestSaveCompleted {
+                        success: true,
+                        error_message: None, // Corrected: No error message on success
+                    }
+                }
+                Err(e) => {
+                    log::error!("ImageService Background(2): Manifest save failed: {}", e);
+                    AppAction::ManifestSaveCompleted {
+                        success: false,
+                        error_message: Some(format!(
+                            "Failed to save manifest (ImageService): {}",
+                            e
+                        )),
+                    }
+                }
+            };
+
+            if let Err(e) = app_action_sender.send(manifest_completion_action) {
+                log::error!(
+                    "ImageService Background(2): Failed to send manifest save completion action: {}",
+                    e
+                );
+            }
+        });
+    }
+
     pub fn delete_image(
         &self,
         image_to_delete: &ImageMeta,
@@ -182,7 +313,12 @@ impl ImageService {
         self.persistence_service.delete_image_and_thumbnails(
             &image_to_delete.map,      // This field holds the actual map name
             &image_to_delete.filename, // This field holds the actual image filename
-            &mut *self.thumbnail_service.lock().map_err(|e| ImageServiceError::Other(format!("Failed to lock thumbnail_service for delete: {}", e)))?,
+            &mut *self.thumbnail_service.lock().map_err(|e| {
+                ImageServiceError::Other(format!(
+                    "Failed to lock thumbnail_service for delete: {}",
+                    e
+                ))
+            })?,
         )?;
 
         // 2. Remove ImageMeta from the manifest

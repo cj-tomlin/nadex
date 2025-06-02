@@ -1,6 +1,6 @@
 // src/app_actions.rs
 
-use crate::persistence::{NadeType, ImageMeta};
+use crate::persistence::{ImageMeta, NadeType};
 use crate::ui::edit_view::EditFormData; // Added import
 use std::path::PathBuf; // Added import
 
@@ -18,14 +18,17 @@ pub enum AppAction {
         notes: String,
     },
     SetProcessingUpload(bool),
-    UploadSucceededBackgroundTask { // Sent from image upload thread to main thread
+    UploadSucceededBackgroundTask {
+        // Sent from image upload thread to main thread
         new_image_meta: ImageMeta,
         map_name: String, // map_name is needed to update the manifest correctly
     },
-    UploadFailed { // Sent from image upload thread to main thread
+    UploadFailed {
+        // Sent from image upload thread to main thread
         error_message: Option<String>,
     },
-    ManifestSaveCompleted { // Sent from manifest save thread to main thread
+    ManifestSaveCompleted {
+        // Sent from manifest save thread to main thread
         success: bool,
         error_message: Option<String>,
     },
@@ -48,7 +51,6 @@ pub enum AppAction {
     // --- Delete Confirmation Modal Actions ---
     DeleteConfirm,
     DeleteCancel,
-
     // Add other action categories and specific actions as needed
     // Example: Modal Actions, etc.
 }

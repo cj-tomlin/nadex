@@ -1,9 +1,9 @@
-use egui::{Context, Window, ComboBox, TextEdit, Id, Align2, Vec2};
-use crate::persistence::NadeType;
-use crate::app_state::AppState;
 use crate::app_actions::AppAction; // Added AppAction for the queue
-use strum::IntoEnumIterator;
+use crate::app_state::AppState;
 use crate::persistence::ImageMeta;
+use crate::persistence::NadeType;
+use egui::{Align2, ComboBox, Context, Id, TextEdit, Vec2, Window};
+use strum::IntoEnumIterator;
 
 /// Data structure for the edit form.
 #[derive(Clone, Debug)]
@@ -30,20 +30,17 @@ impl EditFormData {
 /// Renders the edit modal for an image.
 ///
 /// Pushes `AppAction::EditModalSave` or `AppAction::EditModalCancel` to the action queue.
-pub fn show_edit_modal(
-    app_state: &mut AppState,
-    ctx: &Context,
-    action_queue: &mut Vec<AppAction>,
-) {
+pub fn show_edit_modal(app_state: &mut AppState, ctx: &Context, action_queue: &mut Vec<AppAction>) {
     let mut open = app_state.editing_image_meta.is_some() && app_state.edit_form_data.is_some();
     let mut an_action_was_pushed_by_buttons = false;
 
     // Ensure edit_form_data exists. If not, and we were supposed to be editing, push Cancel action.
     // This modal should only be called if app_state.editing_image_meta is Some.
     // The presence of app_state.edit_form_data is critical.
-    if !open { // if modal should not be open from the start due to state
+    if !open {
+        // if modal should not be open from the start due to state
         if app_state.editing_image_meta.is_some() && app_state.edit_form_data.is_none() {
-             // This indicates an inconsistent state if we intended to edit but have no form data.
+            // This indicates an inconsistent state if we intended to edit but have no form data.
             action_queue.push(AppAction::EditModalCancel);
         }
         return; // Exit if no form data or not supposed to be editing.
@@ -72,7 +69,7 @@ pub fn show_edit_modal(
             // Re-borrow app_state.edit_form_data mutably here, as it's confirmed to be Some.
             if let Some(form_data) = &mut app_state.edit_form_data {
                 ui.set_min_width(300.0);
-                ui.set_max_width(400.0); 
+                ui.set_max_width(400.0);
 
                 // Window title is set above, no need for another heading here.
                 ui.separator();
@@ -98,11 +95,18 @@ pub fn show_edit_modal(
                         ui.end_row();
 
                         ui.label("Position:");
-                        ui.add(TextEdit::singleline(&mut form_data.position).hint_text("e.g., A Site, Mid Doors"));
+                        ui.add(
+                            TextEdit::singleline(&mut form_data.position)
+                                .hint_text("e.g., A Site, Mid Doors"),
+                        );
                         ui.end_row();
 
                         ui.label("Notes:");
-                        ui.add(TextEdit::multiline(&mut form_data.notes).desired_rows(3).hint_text("Brief description or lineup"));
+                        ui.add(
+                            TextEdit::multiline(&mut form_data.notes)
+                                .desired_rows(3)
+                                .hint_text("Brief description or lineup"),
+                        );
                         ui.end_row();
                     });
 
@@ -116,7 +120,11 @@ pub fn show_edit_modal(
                         an_action_was_pushed_by_buttons = true;
                         // The modal will close because AppState will change via the action handler
                     }
-                    if ui.button("Cancel").on_hover_text("Discard changes").clicked() {
+                    if ui
+                        .button("Cancel")
+                        .on_hover_text("Discard changes")
+                        .clicked()
+                    {
                         action_queue.push(AppAction::EditModalCancel);
                         an_action_was_pushed_by_buttons = true;
                         // The modal will close because AppState will change via the action handler

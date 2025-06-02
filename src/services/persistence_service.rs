@@ -9,14 +9,13 @@ use chrono::Utc;
 use serde_json; // For deserialization // For timestamp in copy_image_to_data
 // crate::thumbnail is no longer needed for these, but might be for generate_all_thumbnails later
 // For now, let's remove it and add back if necessary. We will need image ops though.
-use crate::services::thumbnail_service::{ThumbnailService, ThumbnailServiceError}; // Added for thumbnail generation call and error type
+use crate::services::thumbnail_service::{ALLOWED_THUMB_SIZES, ThumbnailLoadJob, ThumbnailService}; // Added for thumbnail generation call and error type
 use std::sync::{Arc, Mutex}; // Added for Arc and Mutex
 // image::imageops::FilterType and image::ImageFormat are no longer needed here as thumbnail generation moved
 
 #[derive(Debug)]
 pub enum PersistenceServiceError {
     IoError(std::io::Error),
-    ThumbnailGenerationFailed(ThumbnailServiceError),
     InvalidInput(String),
     SerializationError(String),
 }
@@ -25,9 +24,6 @@ impl std::fmt::Display for PersistenceServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PersistenceServiceError::IoError(err) => write!(f, "Persistence IO error: {}", err),
-            PersistenceServiceError::ThumbnailGenerationFailed(err) => {
-                write!(f, "Thumbnail generation failed: {}", err)
-            }
             PersistenceServiceError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             PersistenceServiceError::SerializationError(msg) => {
                 write!(f, "Serialization error: {}", msg)
@@ -40,7 +36,6 @@ impl std::error::Error for PersistenceServiceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             PersistenceServiceError::IoError(err) => Some(err),
-            PersistenceServiceError::ThumbnailGenerationFailed(err) => Some(err),
             _ => None,
         }
     }
@@ -139,17 +134,33 @@ impl PersistenceService {
         let dest_path = map_dir.join(&unique_filename_str);
         fs::copy(src, &dest_path)?;
 
-        // After successfully copying the main image, generate thumbnails using ThumbnailService.
-        thumbnail_service
-            .lock()
-            .map_err(|e| {
-                PersistenceServiceError::InvalidInput(format!(
-                    "Failed to lock thumbnail service: {}",
-                    e
-                ))
-            })? // Or a specific LockError variant
-            .generate_thumbnails_for_image(&self.data_dir, map, &dest_path)
-            .map_err(PersistenceServiceError::ThumbnailGenerationFailed)?;
+        // After successfully copying the main image, send jobs to generate thumbnails.
+        let thumb_storage_dir = map_dir.join(".thumbnails");
+        if let Ok(ts_lock) = thumbnail_service.lock() {
+            for &size in ALLOWED_THUMB_SIZES.iter() {
+                let job = ThumbnailLoadJob {
+                    image_file_path: dest_path.clone(), // Path to the *copied* original image in the map's data dir
+                    thumb_storage_dir: thumb_storage_dir.clone(),
+                    target_size: size,
+                };
+                if let Err(e) = ts_lock.send_thumbnail_job(job) {
+                    log::error!(
+                        "PersistenceService: Failed to send thumbnail generation job for {:?} size {}: {}",
+                        dest_path,
+                        size,
+                        e
+                    );
+                    // Not returning an error here, as the main image copy succeeded.
+                    // Thumbnails can be generated later or on demand.
+                }
+            }
+        } else {
+            log::error!(
+                "PersistenceService: Failed to lock thumbnail service to send generation jobs for {:?}.",
+                dest_path
+            );
+            // Not returning an error here either, for the same reason.
+        }
 
         Ok((dest_path, unique_filename_str))
     }
@@ -166,11 +177,16 @@ impl PersistenceService {
         //    This needs the base data_dir, map_name, and the original image's filename.
         // Attempt to delete thumbnails from disk and clear from cache via ThumbnailService
         // Errors here are logged by ThumbnailService but do not stop main image deletion.
-        thumbnail_service.clear_cached_thumbnails_for_image(
-            image_filename,
-            map_name,
-            &self.data_dir,
-        );
+        if let Err(e) =
+            thumbnail_service.remove_thumbnails_for_image(image_filename, map_name, &self.data_dir)
+        {
+            log::error!(
+                "PersistenceService: Failed to remove thumbnails for image {} in map {}: {}",
+                image_filename,
+                map_name,
+                e
+            );
+        }
 
         // 2. Delete main image file
         //    If this fails, we return the error immediately.

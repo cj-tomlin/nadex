@@ -1,13 +1,12 @@
 use crate::app_state::AppState;
-use egui::{Rounding, Sense, Ui, Vec2};
 use crate::persistence::{ImageMeta, NadeType};
+use egui::{Rounding, Sense, Ui, Vec2};
 
 use crate::app_actions::AppAction; // Added import
 
 /// Renders the main image grid.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
 pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<AppAction>) {
-
     // Display image grid for app.current_map
     let data_dir_clone = app.data_dir.clone();
 
@@ -86,12 +85,17 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                     let target_display_size = app.grid_image_size as u32;
                     let mut loaded_thumbnail = false;
 
-                    if let Some((texture_handle, (img_w, img_h))) = app.thumbnail_service.lock().unwrap().get_or_load_thumbnail_texture(
-                        ui,
-                        &img_path,
-                        &thumb_dir,
-                        target_display_size,
-                    ) {
+                    if let Some((texture_handle, (img_w, img_h))) = app
+                        .thumbnail_service
+                        .lock()
+                        .unwrap()
+                        .get_or_request_thumbnail_texture(
+                            // ui, // Not needed for async version
+                            &img_path,
+                            &thumb_dir,
+                            target_display_size,
+                        )
+                    {
                         let img_w_f32 = *img_w as f32;
                         let img_h_f32 = *img_h as f32;
                         let aspect_ratio = if img_h_f32 > 0.001 {
@@ -116,9 +120,8 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                             ui.add_sized([display_width, display_height], image_widget);
 
                         if image_response.clicked() {
-                            action_queue.push(AppAction::ImageGridImageClicked(
-                                current_meta_ref.clone(),
-                            ));
+                            action_queue
+                                .push(AppAction::ImageGridImageClicked(current_meta_ref.clone()));
                         }
 
                         // Persistent overlay for nade info
@@ -227,5 +230,4 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
     if filtered_images.is_empty() {
         ui.label("[No images uploaded for this filter]");
     }
-
 }

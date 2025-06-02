@@ -32,3 +32,16 @@ pub struct ImageManifest {
     pub maps: HashMap<String, MapMeta>,          // map_name -> MapMeta
 }
 
+impl ImageManifest {
+    pub fn clone_and_add(&self, new_image: ImageMeta, map_name: &str) -> Self {
+        let mut new_manifest = self.clone();
+        new_manifest
+            .images
+            .entry(map_name.to_string())
+            .or_default()
+            .push(new_image);
+        // Optionally, update map metadata if needed, e.g., last_accessed
+        // For now, just adding the image.
+        new_manifest
+    }
+}

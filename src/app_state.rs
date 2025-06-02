@@ -1,16 +1,16 @@
 // src/app_state.rs
 
-use crate::persistence::{ImageManifest, ImageMeta, NadeType};
 use crate::app_actions::AppAction; // Added for channel type
+use crate::persistence::{ImageManifest, ImageMeta, NadeType};
 use std::sync::mpsc; // Added for channel
 
-use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
-use crate::services::persistence_service::PersistenceService;
 use crate::services::image_service::ImageService;
+use crate::services::persistence_service::PersistenceService;
 use crate::services::thumbnail_service::ThumbnailService;
+use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
+use eframe::egui;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex}; // Added for Arc and Mutex
-use eframe::egui;
 
 // Make sure EditFormData and UploadTask are public in their respective modules.
 
@@ -35,7 +35,6 @@ pub struct AppState {
     // User grid preferences
     pub grid_image_size: f32,
     // Window state (future: persist)
-
     pub selected_image_for_detail: Option<ImageMeta>,
     pub detail_view_texture_handle: Option<egui::TextureHandle>,
     pub editing_image_meta: Option<ImageMeta>,
@@ -59,9 +58,10 @@ impl AppState {
         data_dir.push("nadex");
         std::fs::create_dir_all(&data_dir).ok(); // Ensure the directory exists
         // Initialize PersistenceService first, as it might be needed for other setup or loading
-        let persistence_service = Arc::new(PersistenceService::new(data_dir.clone())
-            .expect("Failed to initialize PersistenceService. Ensure data directory is accessible."));
-        
+        let persistence_service = Arc::new(PersistenceService::new(data_dir.clone()).expect(
+            "Failed to initialize PersistenceService. Ensure data directory is accessible.",
+        ));
+
         // Initialize ThumbnailService before ImageService, as ImageService might depend on it.
         let thumbnail_service = Arc::new(Mutex::new(ThumbnailService::new()));
 
@@ -104,18 +104,17 @@ impl AppState {
             show_delete_confirmation: None,
             detail_view_error: None,
             persistence_service, // Add the initialized service (now Arc-wrapped)
-            image_service, // Add the initialized service (now Arc-wrapped)
-            thumbnail_service, // Use the thumbnail_service initialized earlier
+            image_service,       // Add the initialized service (now Arc-wrapped)
+            thumbnail_service,   // Use the thumbnail_service initialized earlier
             upload_result_sender: tx,
             upload_result_receiver: rx,
         }
     }
 
     pub fn filter_images_for_current_map(&mut self) {
-        self.current_map_images = self.image_service.get_images_for_map_sorted(
-            &self.image_manifest, 
-            &self.current_map
-        );
+        self.current_map_images = self
+            .image_service
+            .get_images_for_map_sorted(&self.image_manifest, &self.current_map);
     }
 }
 
@@ -134,7 +133,13 @@ impl std::fmt::Debug for AppState {
             .field("grid_image_size", &self.grid_image_size)
             .field("thumbnail_service", &self.thumbnail_service)
             .field("selected_image_for_detail", &self.selected_image_for_detail)
-            .field("detail_view_texture_handle", &self.detail_view_texture_handle.as_ref().map(|_| "TextureHandle (present)"))
+            .field(
+                "detail_view_texture_handle",
+                &self
+                    .detail_view_texture_handle
+                    .as_ref()
+                    .map(|_| "TextureHandle (present)"),
+            )
             .field("editing_image_meta", &self.editing_image_meta)
             .field("edit_form_data", &self.edit_form_data)
             .field("show_delete_confirmation", &self.show_delete_confirmation)

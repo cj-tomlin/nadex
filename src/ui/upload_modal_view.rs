@@ -32,7 +32,12 @@ impl UploadModal {
     // ... existing new() method ...
 
     #[allow(clippy::too_many_lines)]
-    pub fn show(&mut self, ctx: &egui::Context, app_state: &mut AppState, action_queue: &mut Vec<AppAction>) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        app_state: &mut AppState,
+        action_queue: &mut Vec<AppAction>,
+    ) {
         if !app_state.show_upload_modal {
             return;
         }
@@ -49,7 +54,8 @@ impl UploadModal {
                     // File Picker
                     ui.horizontal(|ui_h| {
                         ui_h.label("File:");
-                        let file_display_text = self.file_path
+                        let file_display_text = self
+                            .file_path
                             .as_ref()
                             .and_then(|p| p.file_name())
                             .and_then(|os| os.to_str())
@@ -102,14 +108,15 @@ impl UploadModal {
                         }
                         // Enable confirm only if a file is selected
                         let confirm_enabled = self.file_path.is_some();
-                        ui_h.add_enabled_ui(confirm_enabled, |ui_enabled_h|{
+                        ui_h.add_enabled_ui(confirm_enabled, |ui_enabled_h| {
                             if ui_enabled_h.button("Confirm Upload").clicked() {
-                                if let Some(file_path) = self.file_path.clone() { // Shadow to ensure it's Some
+                                if let Some(file_path) = self.file_path.clone() {
+                                    // Shadow to ensure it's Some
                                     action_queue.push(AppAction::SetProcessingUpload(true));
                                     action_queue.push(AppAction::SubmitUpload {
                                         file_path,
                                         map_name: app_state.current_map.clone(), // Get map_name from AppState
-                                        nade_type: self.nade_type, // NadeType is Copy
+                                        nade_type: self.nade_type,               // NadeType is Copy
                                         position: self.position.clone(),
                                         notes: self.notes.clone(),
                                     });

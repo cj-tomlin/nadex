@@ -1,8 +1,8 @@
-use egui::Ui;
-use crate::app_state::AppState;
 use crate::app_actions::AppAction;
+use crate::app_state::AppState;
 use crate::persistence::NadeType;
 use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
+use egui::Ui;
 
 /// Renders the top bar UI elements (map selection, filters, upload button, etc.).
 pub fn show_top_bar(
@@ -20,9 +20,13 @@ pub fn show_top_bar(
                 for map_name_str in &app_state.maps {
                     // For ComboBox, we need a mutable variable to bind to, even if we don't use its changed state directly for app_state.current_map.
                     // The actual change is driven by the action.
-                    let mut current_selection_for_combo = app_state.current_map.clone(); 
+                    let mut current_selection_for_combo = app_state.current_map.clone();
                     if ui_combo
-                        .selectable_value(&mut current_selection_for_combo, map_name_str.to_string(), *map_name_str)
+                        .selectable_value(
+                            &mut current_selection_for_combo,
+                            map_name_str.to_string(),
+                            *map_name_str,
+                        )
                         .changed()
                     {
                         // Only push action if the selection actually changed to the new map_name_str
@@ -53,14 +57,15 @@ pub fn show_top_bar(
                 for (i, &sz) in ALLOWED_THUMB_SIZES.iter().enumerate() {
                     if ui_combo
                         .selectable_value(&mut temp_selected_idx, i, format!("{} px", sz))
-                        .clicked() // Using clicked() is fine here as we check the actual value change below
+                        .clicked()
+                    // Using clicked() is fine here as we check the actual value change below
                     {
-                         if app_state.grid_image_size != sz as f32 {
+                        if app_state.grid_image_size != sz as f32 {
                             // The AppState will be updated by the action handler, but for immediate UI feedback in the combo box text,
                             // we can update it here. However, the canonical way is to let the action handler do it.
                             // For now, let's rely on the action handler to update app_state.grid_image_size.
                             action_queue.push(AppAction::SetGridImageSize(sz as f32));
-                         }
+                        }
                     }
                 }
             });
@@ -88,8 +93,7 @@ pub fn show_top_bar(
         ];
 
         let text_color_selected = ui_content.style().visuals.selection.stroke.color;
-        let text_color_unselected =
-            ui_content.style().visuals.widgets.inactive.text_color();
+        let text_color_unselected = ui_content.style().visuals.widgets.inactive.text_color();
 
         for (filter_option, label_str) in nade_types_options {
             let is_selected = app_state.selected_nade_type == filter_option;
