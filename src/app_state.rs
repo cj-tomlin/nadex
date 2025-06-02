@@ -1,9 +1,10 @@
 // src/app_state.rs
 
-use crate::persistence::{ImageManifest, ImageMeta, NadeType}; // Removed load_manifest import
+use crate::persistence::{ImageManifest, ImageMeta, NadeType};
+use crate::app_actions::AppAction; // Added for channel type
+use std::sync::mpsc; // Added for channel
 
 use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
-use crate::app_logic::upload_processor::UploadTask; // Assuming UploadTask is pub
 use crate::services::persistence_service::PersistenceService;
 use crate::services::image_service::ImageService;
 use crate::services::thumbnail_service::ThumbnailService;
@@ -18,12 +19,8 @@ pub struct AppState {
     // Filtering UI state
     pub selected_nade_type: Option<NadeType>,
     // Upload modal state
-    pub show_upload_modal: bool,
-    pub upload_modal_file: Option<PathBuf>,
-    pub upload_modal_nade_type: NadeType,
-    pub upload_modal_notes: String,
-    pub upload_modal_position: String,
-    pub uploads: Vec<UploadTask>,
+    pub show_upload_modal: bool, // This flag will be used by NadexApp to control UploadModal visibility
+    pub is_processing_upload: bool,
     pub current_map: String,
     pub current_map_images: Vec<ImageMeta>,
 
@@ -50,6 +47,10 @@ pub struct AppState {
     pub persistence_service: Arc<PersistenceService>,
     pub image_service: Arc<ImageService>,
     pub thumbnail_service: Arc<Mutex<ThumbnailService>>,
+
+    // Channel for upload results from background thread
+    pub upload_result_sender: mpsc::Sender<AppAction>,
+    pub upload_result_receiver: mpsc::Receiver<AppAction>,
 }
 
 impl AppState {
@@ -71,16 +72,14 @@ impl AppState {
 
         let manifest = persistence_service.load_manifest();
 
+        let (tx, rx) = mpsc::channel::<AppAction>();
+
         Self {
             selected_nade_type: None,
-            uploads: Vec::new(),
             current_map: "de_ancient".to_string(),
             current_map_images: Vec::new(),
-            show_upload_modal: false,
-            upload_modal_file: None,
-            upload_modal_nade_type: NadeType::Smoke,
-            upload_modal_notes: String::new(),
-            upload_modal_position: String::new(),
+            show_upload_modal: false, // Managed by NadexApp
+            is_processing_upload: false,
             maps: vec![
                 "de_ancient",
                 "de_anubis",
@@ -107,6 +106,8 @@ impl AppState {
             persistence_service, // Add the initialized service (now Arc-wrapped)
             image_service, // Add the initialized service (now Arc-wrapped)
             thumbnail_service, // Use the thumbnail_service initialized earlier
+            upload_result_sender: tx,
+            upload_result_receiver: rx,
         }
     }
 
@@ -123,11 +124,7 @@ impl std::fmt::Debug for AppState {
         f.debug_struct("AppState")
             .field("selected_nade_type", &self.selected_nade_type)
             .field("show_upload_modal", &self.show_upload_modal)
-            .field("upload_modal_file", &self.upload_modal_file)
-            .field("upload_modal_nade_type", &self.upload_modal_nade_type)
-            .field("upload_modal_notes", &self.upload_modal_notes)
-            .field("upload_modal_position", &self.upload_modal_position)
-            .field("uploads", &self.uploads)
+            .field("is_processing_upload", &self.is_processing_upload)
             .field("current_map", &self.current_map)
             .field("current_map_images", &self.current_map_images)
             .field("maps", &self.maps)
@@ -143,6 +140,7 @@ impl std::fmt::Debug for AppState {
             .field("show_delete_confirmation", &self.show_delete_confirmation)
             .field("detail_view_error", &self.detail_view_error)
             .field("persistence_service", &self.persistence_service) // Add persistence_service
+            // Skipping sender/receiver in Debug
             .finish()
     }
 }

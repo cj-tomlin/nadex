@@ -26,7 +26,7 @@ pub struct MapMeta {
     pub last_accessed: SystemTime,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct ImageManifest {
     pub images: HashMap<String, Vec<ImageMeta>>, // map_name -> Vec<ImageMeta>
     pub maps: HashMap<String, MapMeta>,          // map_name -> MapMeta

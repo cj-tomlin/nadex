@@ -1,21 +1,21 @@
 use eframe::egui;
 use crate::persistence::ImageMeta;
-use crate::app_state::AppState; // Assuming NadexApp is pub(crate) or pub
+use crate::app_state::AppState;
+use crate::app_actions::AppAction; // Added for action queue
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DeleteConfirmationAction {
-    ConfirmDelete,
-    Cancel,
-}
+// DeleteConfirmationAction enum removed
 
 pub fn show_delete_confirmation_modal(
-    _app: &AppState, // May need &mut if modal has its own transient state to manage within app struct
+    app_state: &mut AppState, // Changed to &mut AppState, though not strictly needed for current logic, good for consistency
     ctx: &egui::Context,
     image_to_delete: &ImageMeta,
-) -> Option<DeleteConfirmationAction> {
-    let mut action: Option<DeleteConfirmationAction> = None;
+    action_queue: &mut Vec<AppAction>,
+) {
+        let mut open = app_state.show_delete_confirmation.is_some(); // Control window visibility based on app_state
+    let mut button_action_taken = false;
 
     egui::Window::new("Confirm Delete")
+        .open(&mut open) // Allow egui to close the window (e.g. via 'x' or escape)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -25,13 +25,20 @@ pub fn show_delete_confirmation_modal(
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
-                    action = Some(DeleteConfirmationAction::ConfirmDelete);
+                    action_queue.push(AppAction::DeleteConfirm);
+                    button_action_taken = true;
                 }
                 if ui.button("Cancel").clicked() {
-                    action = Some(DeleteConfirmationAction::Cancel);
+                    action_queue.push(AppAction::DeleteCancel);
+                    button_action_taken = true;
                 }
             });
         });
 
-    action
+    // If the window was closed by egui (e.g., 'x' button) and no button action was taken,
+    // it implies a cancel action.
+    if !open && !button_action_taken {
+        action_queue.push(AppAction::DeleteCancel);
+    }
+    // Function no longer returns a value
 }

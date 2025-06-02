@@ -2,18 +2,11 @@ use crate::app_state::AppState;
 use egui::{Rounding, Sense, Ui, Vec2};
 use crate::persistence::{ImageMeta, NadeType};
 
-/// Actions that can be triggered from the image grid.
-#[derive(Debug)]
-pub enum ImageGridAction {
-    ImageClicked(ImageMeta),
-}
+use crate::app_actions::AppAction; // Added import
 
 /// Renders the main image grid.
-///
-/// Returns `Option<ImageGridAction>` if an action was taken by the user.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
-pub fn show_image_grid(app: &mut AppState, ui: &mut Ui) -> Option<ImageGridAction> {
-    let mut action: Option<ImageGridAction> = None;
+pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<AppAction>) {
 
     // Display image grid for app.current_map
     let data_dir_clone = app.data_dir.clone();
@@ -123,7 +116,9 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui) -> Option<ImageGridActio
                             ui.add_sized([display_width, display_height], image_widget);
 
                         if image_response.clicked() {
-                            action = Some(ImageGridAction::ImageClicked(current_meta_ref.clone()));
+                            action_queue.push(AppAction::ImageGridImageClicked(
+                                current_meta_ref.clone(),
+                            ));
                         }
 
                         // Persistent overlay for nade info
@@ -233,5 +228,4 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui) -> Option<ImageGridActio
         ui.label("[No images uploaded for this filter]");
     }
 
-    action
 }

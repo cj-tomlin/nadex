@@ -1,2 +1,2 @@
 // src/app_logic/mod.rs
-pub mod upload_processor;
+// upload_processor module removed as it's no longer used.
