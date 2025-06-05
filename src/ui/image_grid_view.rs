@@ -1,160 +1,13 @@
-use crate::NadexApp;
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
-
-const MAX_THUMB_CACHE_SIZE: usize = 18;
-
-pub struct ThumbnailCache {
-    textures: HashMap<String, (egui::TextureHandle, (u32, u32))>, // Key: thumb_path_str
-    order: VecDeque<String>,                                      // For LRU: stores thumb_path_str
-                                                                  // max_size: usize, // Implicitly MAX_THUMB_CACHE_SIZE for now
-}
-
-impl ThumbnailCache {
-    pub fn new() -> Self {
-        Self {
-            textures: HashMap::new(),
-            order: VecDeque::with_capacity(MAX_THUMB_CACHE_SIZE),
-            // max_size: MAX_THUMB_CACHE_SIZE,
-        }
-    }
-
-    fn prune(&mut self) {
-        while self.order.len() > MAX_THUMB_CACHE_SIZE {
-            if let Some(oldest_key) = self.order.pop_back() {
-                if self.textures.remove(&oldest_key).is_some() {
-                    // log::debug!("Cache PRUNED: {}", oldest_key);
-                }
-                // log::debug!("Pruned {} from thumbnail cache due to size limit.", oldest_key);
-            } else {
-                // Should not happen if order and textures are consistent
-                break;
-            }
-        }
-    }
-
-    pub fn get_or_load(
-        &mut self,
-        ui: &egui::Ui,
-        image_file_path: &PathBuf,
-        thumb_storage_dir: &PathBuf,
-        target_size: u32,
-    ) -> Option<&(egui::TextureHandle, (u32, u32))> {
-        let thumb_path = match crate::thumbnail::get_thumbnail(
-            image_file_path,
-            thumb_storage_dir,
-            target_size,
-        ) {
-            Some(p) => p,
-            None => {
-                // log::warn!("Failed to get or generate thumbnail for {:?}", image_file_path);
-                return None;
-            }
-        };
-        let thumb_path_str = thumb_path.to_string_lossy().into_owned();
-
-        if self.textures.contains_key(&thumb_path_str) {
-            // Move to front of LRU
-            if let Some(index) = self.order.iter().position(|x| x == &thumb_path_str) {
-                let key = self.order.remove(index).unwrap();
-                self.order.push_front(key);
-            } else {
-                // Should not happen if textures and order are consistent, but as a fallback:
-                self.order.push_front(thumb_path_str.clone());
-            }
-            // log::debug!("Cache HIT for: {}", thumb_path_str);
-            return self.textures.get(&thumb_path_str); // Return direct reference
-        }
-
-        // log::debug!("Cache MISS for: {}. Loading from disk.", thumb_path_str);
-        match image::open(&thumb_path) {
-            Ok(img) => {
-                let image_width = img.width();
-                let image_height = img.height();
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                    [image_width as usize, image_height as usize],
-                    img.to_rgba8().as_flat_samples().as_slice(),
-                );
-
-                let texture_name = thumb_path_str.clone();
-                let texture_handle =
-                    ui.ctx()
-                        .load_texture(texture_name, color_image, egui::TextureOptions::LINEAR);
-
-                self.textures.insert(
-                    thumb_path_str.clone(),
-                    (texture_handle, (image_width, image_height)),
-                );
-                self.order.push_front(thumb_path_str.clone()); // Newly loaded is most recent
-
-                self.prune();
-
-                // log::debug!("Loaded and cached thumbnail: {}", thumb_path_str);
-                self.textures.get(&thumb_path_str)
-            }
-            Err(_e) => {
-                // log::error!("Failed to open thumbnail image {}: {}", thumb_path_str, _e);
-                None
-            }
-        }
-    }
-
-    pub fn remove_image_thumbnails(
-        &mut self,
-        image_filename: &str,
-        image_map_name: &str,
-        data_dir: &PathBuf,
-    ) {
-        let thumb_storage_dir = data_dir.join(image_map_name).join(".thumbnails");
-        let file_stem = PathBuf::from(image_filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        let extension = PathBuf::from(image_filename)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        if file_stem.is_empty() || extension.is_empty() {
-            // log::warn!("Could not determine file stem or extension for {}, cannot remove thumbnails.", image_filename);
-            return;
-        }
-
-        for &size in crate::thumbnail::ALLOWED_THUMB_SIZES.iter() {
-            let expected_thumb_filename = format!("{}_{}.{}", file_stem, size, extension);
-            let expected_thumb_path = thumb_storage_dir.join(&expected_thumb_filename);
-            let expected_thumb_path_str = expected_thumb_path.to_string_lossy().into_owned();
-
-            if self.textures.remove(&expected_thumb_path_str).is_some() {
-                // log::debug!("Removed {} from thumbnail cache textures", expected_thumb_path_str);
-                self.order.retain(|k| k != &expected_thumb_path_str);
-                // log::debug!("Updated thumbnail cache order after removing {}", expected_thumb_path_str);
-            } else {
-                // log::trace!("Thumbnail path {} not found in cache for removal.", expected_thumb_path_str);
-            }
-        }
-    }
-}
-
+use crate::app_state::AppState;
 use crate::persistence::{ImageMeta, NadeType};
-
 use egui::{Rounding, Sense, Ui, Vec2};
 
-/// Actions that can be triggered from the image grid.
-#[derive(Debug)]
-pub enum ImageGridAction {
-    ImageClicked(ImageMeta),
-}
+use crate::app_actions::AppAction; // Added import
+use crate::services::thumbnail_service::ThumbnailServiceTrait;
 
 /// Renders the main image grid.
-///
-/// Returns `Option<ImageGridAction>` if an action was taken by the user.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
-pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridAction> {
-    let mut action: Option<ImageGridAction> = None;
-
+pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<AppAction>) {
     // Display image grid for app.current_map
     let data_dir_clone = app.data_dir.clone();
 
@@ -164,8 +17,7 @@ pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridActio
         .current_map_images
         .iter()
         .filter(|meta| {
-            app.selected_nade_type.is_none()
-                || app.selected_nade_type == Some(meta.nade_type.clone())
+            app.selected_nade_type.is_none() || app.selected_nade_type == Some(meta.nade_type)
         })
         .collect();
 
@@ -191,7 +43,7 @@ pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridActio
 
         grid.show(ui, |ui| {
             for (i, meta) in filtered_images.iter().enumerate() {
-                let current_meta_ref: &ImageMeta = *meta;
+                let current_meta_ref: &ImageMeta = meta;
 
                 let img_path_check = data_dir_clone
                     .join(&current_meta_ref.map)
@@ -233,14 +85,35 @@ pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridActio
                     let target_display_size = app.grid_image_size as u32;
                     let mut loaded_thumbnail = false;
 
-                    if let Some((texture_handle, (img_w, img_h))) = app.thumbnail_cache.get_or_load(
-                        ui,
-                        &img_path,
-                        &thumb_dir,
-                        target_display_size,
-                    ) {
-                        let img_w_f32 = *img_w as f32;
-                        let img_h_f32 = *img_h as f32;
+                    let thumb_path_key_str =
+                        crate::services::thumbnail_service::module_construct_thumbnail_path(
+                            &img_path,
+                            &thumb_dir,
+                            target_display_size,
+                        )
+                        .to_string_lossy()
+                        .into_owned();
+
+                    // Request generation (fire and forget for now, result is handled by cache polling)
+                    let _ = app
+                        .thumbnail_service
+                        .lock()
+                        .unwrap()
+                        .request_thumbnail_generation(
+                            img_path.clone(),  // Assuming img_path is PathBuf or can be cloned
+                            thumb_dir.clone(), // Assuming thumb_dir is PathBuf or can be cloned
+                            target_display_size,
+                        );
+
+                    // Attempt to get from cache
+                    if let Some((texture_handle, (img_w, img_h))) = app
+                        .thumbnail_service
+                        .lock()
+                        .unwrap()
+                        .get_cached_texture_info(&thumb_path_key_str)
+                    {
+                        let img_w_f32 = img_w as f32;
+                        let img_h_f32 = img_h as f32;
                         let aspect_ratio = if img_h_f32 > 0.001 {
                             img_w_f32 / img_h_f32
                         } else {
@@ -263,7 +136,8 @@ pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridActio
                             ui.add_sized([display_width, display_height], image_widget);
 
                         if image_response.clicked() {
-                            action = Some(ImageGridAction::ImageClicked(current_meta_ref.clone()));
+                            action_queue
+                                .push(AppAction::ImageGridImageClicked(current_meta_ref.clone()));
                         }
 
                         // Persistent overlay for nade info
@@ -372,6 +246,4 @@ pub fn show_image_grid(app: &mut NadexApp, ui: &mut Ui) -> Option<ImageGridActio
     if filtered_images.is_empty() {
         ui.label("[No images uploaded for this filter]");
     }
-
-    action
 }

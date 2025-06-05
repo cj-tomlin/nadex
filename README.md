@@ -34,28 +34,37 @@ A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, m
 
 ## Project Structure (Simplified)
 
-*   `src/main.rs`: Main application logic, UI layout, and event handling.
-*   `src/persistence.rs`: Data structures for image metadata and functions for loading/saving the manifest and image files.
-*   `src/thumbnail.rs`: Thumbnail generation logic.
-*   `src/ui/`: Modules related to specific UI components (e.g., image grid, modals).
-*   `src/app_logic/`: Modules for application-specific logic (e.g., upload processing).
+*   `src/main.rs`: Main application entry point, event loop (`NadexApp::update`), and top-level UI orchestration.
+*   `src/app_state.rs`: Defines the central `AppState` struct holding all application state.
+*   `src/app_actions.rs`: Defines the `AppAction` enum used for queuing UI events and background task results.
+*   `src/persistence.rs`: Defines core data structures like `ImageManifest`, `ImageMeta`, and `NadeType`.
+*   `src/services/`: Contains the business logic and interactions with external resources.
+    *   `persistence_service.rs`: Handles loading/saving the manifest and image files to/from disk.
+    *   `thumbnail_service.rs`: Manages on-disk thumbnail generation and deletion.
+    *   `image_service.rs`: Orchestrates image-related operations (upload, delete, edit metadata), coordinating with other services.
+*   `src/ui/`: Modules for specific UI components (e.g., `image_grid_view.rs`, `upload_modal_view.rs`).
+*   `src/common.rs`: Shared utility functions or common types.
+*   `src/tests_common.rs`: Helper functions and mock objects for testing.
 *   `Cargo.toml`: Project dependencies and metadata.
 
 ## Component Interaction Diagram
 
 ```mermaid
 graph TD
-    A[User Interaction] --> B(NadexApp - main.rs);
-    B --> C{UI Event?};
-    C -- Upload Image --> D[Upload Modal - ui/modals.rs];
-    D --> E[copy_image_to_data_threaded - main.rs];
-    E --> F[UploadTask - app_logic/upload_processor.rs];
-    F --> G[Worker Thread];
-    G -- Validates & Copies Image --> H[persistence::copy_image_to_data - persistence.rs];
-    G -- Generates Thumbnails --> I[thumbnail::generate_all_thumbnails - thumbnail.rs];
-    H --> J[Image Files on Disk];
-    I --> K[Thumbnail Files on Disk];
-    F -- Updates Manifest (on main thread) --> L[ImageManifest - persistence.rs];
+    UserInteraction[User Interaction] -->|Triggers event| UIComponents(UI Components - src/ui/*);
+    UIComponents -->|Creates & Queues| AppActionQueue[AppAction Queue in NadexApp];
+    
+    NadexApp[NadexApp - main.rs] -->|Processes| AppActionQueue;
+    NadexApp -->|Updates| AppState(AppState - src/app_state.rs);
+    NadexApp -->|Calls| ImageService(ImageService - src/services/image_service.rs);
+    
+    ImageService -->|Uses| PersistenceService(PersistenceService - src/services/persistence_service.rs);
+    ImageService -->|Uses| ThumbnailService(ThumbnailService - src/services/thumbnail_service.rs);
+    
+    PersistenceService -->|Reads/Writes| FileSystem[Disk: Manifest & Images];
+    ThumbnailService -->|Reads/Writes| FileSystem;
+    
+    ImageService -->|May send AppAction for async results| AppActionQueue;
     L --> M[manifest.json on Disk];
 
     C -- View/Filter Images --> N[Image Grid View - ui/image_grid_view.rs];

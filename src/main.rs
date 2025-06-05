@@ -1,22 +1,24 @@
-use crate::persistence::{ImageManifest, ImageMeta, NadeType, load_manifest, save_manifest};
-use crate::thumbnail::generate_all_thumbnails;
+use crate::persistence::ImageMeta;
+use crate::services::thumbnail_service::ThumbnailServiceTrait;
 use eframe::{NativeOptions, egui};
-use env_logger; // Import env_logger
-use image;
-use image::GenericImageView;
+
 use log::{self, LevelFilter};
 
-use std::path::PathBuf;
-
-use std::time::Instant;
-
 // persistence::copy_image_to_data is called via persistence::copy_image_to_data_threaded or directly in persistence module
-use crate::ui::image_grid_view::ThumbnailCache;
+use crate::app_actions::AppAction;
+use crate::app_state::AppState;
+use crate::ui::upload_modal_view::UploadModal; // Added import
+use std::sync::Arc;
 
-mod app_logic;
+mod app_actions;
+mod app_state;
+pub mod common;
 mod persistence;
-mod thumbnail;
+mod services;
 mod ui;
+
+#[cfg(test)]
+pub mod tests_common;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -32,249 +34,38 @@ fn main() -> eframe::Result<()> {
 }
 
 struct NadexApp {
-    // Filtering UI state
-    selected_nade_type: Option<NadeType>,
-    // Upload modal state
-    show_upload_modal: bool,
-    upload_modal_file: Option<PathBuf>,
-    upload_modal_nade_type: NadeType,
-    upload_modal_notes: String,
-    upload_modal_position: String,
-    uploads: Vec<app_logic::upload_processor::UploadTask>,
-    current_map: String,
-    current_map_images: Vec<ImageMeta>, // Added field
-
-    // List of available maps
-    maps: Vec<&'static str>,
-    // Map of map name -> Vec of image file names (not full paths)
-    image_manifest: ImageManifest,
-    // For displaying error messages
-    error_message: Option<String>,
-    // App data dir
-    data_dir: PathBuf,
-    // User grid preferences
-    grid_image_size: f32,
-    // Window state (future: persist)
-    thumbnail_cache: ThumbnailCache,
-    selected_image_for_detail: Option<ImageMeta>,
-    detail_view_texture_handle: Option<egui::TextureHandle>,
-    editing_image_meta: Option<ImageMeta>,
-    edit_form_data: Option<ui::edit_view::EditFormData>,
-    show_delete_confirmation: Option<ImageMeta>,
-    detail_view_error: Option<String>,
+    app_state: AppState,
+    action_queue: Vec<AppAction>,
+    upload_modal: UploadModal, // Added field
+                               // Potentially other fields that are NOT part of the shared AppState,
+                               // like UI-specific temporary state or handles not directly tied to core data.
+                               // For now, we assume all listed fields moved.
 }
 
 impl Default for NadexApp {
     fn default() -> Self {
-        // Use C:/Users/<user>/AppData/Local/nadex
-        let mut data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        data_dir.push("nadex");
-        std::fs::create_dir_all(&data_dir).ok();
-        let manifest = load_manifest(&data_dir);
         let mut app = Self {
-            selected_nade_type: None,
-            uploads: Vec::new(),
-            current_map: "de_ancient".to_string(),
-            current_map_images: Vec::new(), // Initialize new field
-            show_upload_modal: false,
-            upload_modal_file: None,
-            upload_modal_nade_type: NadeType::Smoke,
-            upload_modal_notes: String::new(),
-            upload_modal_position: String::new(),
-            maps: vec![
-                "de_ancient",
-                "de_anubis",
-                "de_cache",
-                "de_dust2",
-                "de_inferno",
-                "de_mirage",
-                "de_nuke",
-                "de_overpass",
-                "de_train",
-                "de_vertigo",
-            ],
-            image_manifest: manifest,
-            error_message: None,
-            data_dir,
-
-            grid_image_size: 480.0,
-
-            thumbnail_cache: ThumbnailCache::new(),
-            selected_image_for_detail: None,
-            detail_view_texture_handle: None,
-            editing_image_meta: None,
-            edit_form_data: None,
-            show_delete_confirmation: None,
-            detail_view_error: None,
+            app_state: AppState::new(),
+            action_queue: Vec::new(),
+            upload_modal: UploadModal::new(), // Initialize UploadModal
         };
-        app.filter_images_for_current_map(); // Call the new method
+        // filter_images_for_current_map needs to be called after AppState is initialized
+        // and it will now operate on app.app_state fields.
+        app.filter_images_for_current_map();
         app
     }
 }
 
 impl NadexApp {
-    fn handle_top_bar_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ui::top_bar_view::TopBarAction,
-    ) {
-        match action {
-            ui::top_bar_view::TopBarAction::MapSelected(map_name) => {
-                self.current_map = map_name;
-                self.filter_images_for_current_map();
-                self.selected_image_for_detail = None;
-                self.detail_view_texture_handle = None;
-                ctx.request_repaint();
-            }
-            ui::top_bar_view::TopBarAction::ImageSizeChanged(size) => {
-                self.grid_image_size = size;
-            }
-            ui::top_bar_view::TopBarAction::NadeTypeFilterChanged(nade_type) => {
-                self.selected_nade_type = nade_type;
-            }
-            ui::top_bar_view::TopBarAction::UploadButtonPushed => {
-                self.show_upload_modal = true;
-            }
-        }
-    }
-
-    fn handle_image_grid_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ui::image_grid_view::ImageGridAction,
-    ) {
-        match action {
-            ui::image_grid_view::ImageGridAction::ImageClicked(meta) => {
-                // Toggle selection or select new
-                if self
-                    .selected_image_for_detail
-                    .as_ref()
-                    .map_or(false, |selected| selected.filename == meta.filename)
-                {
-                    self.selected_image_for_detail = None;
-                    self.detail_view_texture_handle = None;
-                } else {
-                    self.selected_image_for_detail = Some(meta.clone());
-                    self.detail_view_texture_handle = None;
-                    self.load_detail_image(ctx, &meta);
-                }
-            }
-        }
-    }
-
-    fn handle_upload_modal_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ui::upload_modal_view::UploadModalAction,
-    ) {
-        match action {
-            ui::upload_modal_view::UploadModalAction::UploadConfirmed {
-                file_path,
-                nade_type,
-                position,
-                notes,
-            } => {
-                self.copy_image_to_data_threaded(ctx, file_path, nade_type, position, notes);
-                self.show_upload_modal = false;
-                self.upload_modal_file = None;
-                self.upload_modal_nade_type = NadeType::Smoke; // Reset to default
-                self.upload_modal_position = String::new();
-                self.upload_modal_notes = String::new();
-            }
-            ui::upload_modal_view::UploadModalAction::Cancel => {
-                self.show_upload_modal = false;
-                self.upload_modal_file = None;
-                self.upload_modal_nade_type = NadeType::Smoke; // Reset to default
-                self.upload_modal_position = String::new();
-                self.upload_modal_notes = String::new();
-            }
-        }
-    }
-
-    fn handle_detail_modal_action(&mut self, action: ui::detail_view::DetailModalAction) {
-        match action {
-            ui::detail_view::DetailModalAction::Close => {
-                self.selected_image_for_detail = None;
-                self.detail_view_texture_handle = None;
-                self.detail_view_error = None;
-                self.editing_image_meta = None;
-                self.edit_form_data = None;
-            }
-            ui::detail_view::DetailModalAction::RequestEdit(meta) => {
-                // Set up for edit modal
-                self.editing_image_meta = Some(meta.clone());
-                self.edit_form_data = Some(ui::edit_view::EditFormData::from_meta(&meta));
-
-                // Close detail view
-                self.selected_image_for_detail = None;
-                self.detail_view_texture_handle = None;
-                self.detail_view_error = None;
-            }
-            ui::detail_view::DetailModalAction::RequestDelete(meta) => {
-                // Set up for delete confirmation modal
-                self.show_delete_confirmation = Some(meta);
-
-                // Close detail view
-                self.selected_image_for_detail = None;
-                self.detail_view_texture_handle = None;
-                self.detail_view_error = None;
-            }
-        }
-    }
-
-    fn handle_edit_modal_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ui::edit_view::EditModalAction,
-    ) {
-        match action {
-            ui::edit_view::EditModalAction::Save(updated_form_data) => {
-                self.handle_save_image_edit(updated_form_data, ctx);
-                // self.editing_image_meta and self.edit_form_data are reset within handle_save_image_edit
-            }
-            ui::edit_view::EditModalAction::Cancel => {
-                self.editing_image_meta = None;
-                self.edit_form_data = None;
-                self.error_message = None; // Clear any potential error from a previous failed edit attempt
-                ctx.request_repaint();
-            }
-        }
-    }
-
-    fn handle_delete_confirmation_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ui::delete_confirmation_view::DeleteConfirmationAction,
-        meta_to_delete: persistence::ImageMeta,
-    ) {
-        match action {
-            ui::delete_confirmation_view::DeleteConfirmationAction::ConfirmDelete => {
-                self.handle_confirm_image_delete(meta_to_delete, ctx);
-                // State changes like show_delete_confirmation = None are handled within handle_confirm_image_delete
-            }
-            ui::delete_confirmation_view::DeleteConfirmationAction::Cancel => {
-                self.show_delete_confirmation = None;
-                ctx.request_repaint();
-            }
-        }
-    }
-
     fn filter_images_for_current_map(&mut self) {
-        self.current_map_images = self
-            .image_manifest
-            .images
-            .get(&self.current_map)
-            .map_or_else(Vec::new, |images_for_map| {
-                let mut sorted_images = images_for_map.clone();
-                sorted_images.sort_by(|a, b| a.filename.cmp(&b.filename));
-                sorted_images
-            });
+        self.app_state.filter_images_for_current_map();
     }
 
     fn load_detail_image(&mut self, ctx: &egui::Context, image_meta: &ImageMeta) {
         let full_image_path = self
+            .app_state
             .data_dir
-            .join(&self.current_map)
+            .join(&self.app_state.current_map)
             .join(&image_meta.filename);
         match image::open(&full_image_path) {
             Ok(img) => {
@@ -289,193 +80,63 @@ impl NadexApp {
                 );
                 let handle =
                     ctx.load_texture(texture_name, color_image, egui::TextureOptions::default());
-                self.detail_view_texture_handle = Some(handle);
+                self.app_state.detail_view_texture_handle = Some(handle);
+                self.app_state.detail_view_error = None;
             }
             Err(e) => {
                 eprintln!(
                     "Failed to load detail image '{}': {}",
                     image_meta.filename, e
                 );
-                self.detail_view_error = Some(format!("Error loading image: {}", e));
-                self.selected_image_for_detail = None;
-                self.detail_view_texture_handle = None;
+                self.app_state.detail_view_error = Some(format!("Error loading image: {}", e));
+                self.app_state.selected_image_for_detail = None;
+                self.app_state.detail_view_texture_handle = None;
             }
-        }
-    }
-
-    fn copy_image_to_data_threaded(
-        &mut self,
-        ctx: &egui::Context,
-        path: PathBuf, // Original path of the image to upload
-        nade_type: NadeType,
-        position: String,
-        notes: String,
-    ) {
-        let map_name_clone = self.current_map.clone();
-        let data_dir_clone = self.data_dir.clone();
-        let ctx_clone = ctx.clone();
-        let path_clone = path.clone(); // Clone path for the thread
-
-        let (tx, rx) = std::sync::mpsc::channel::<Result<ImageMeta, String>>();
-
-        std::thread::spawn(move || {
-            let result: Result<ImageMeta, String> = (|| { // IIFE for ? operator usage
-                // 1. Validate the image (open and check dimensions)
-                let img = image::open(&path_clone).map_err(|e| {
-                    format!(
-                        "Failed to open image '{}': {}",
-                        path_clone.display(),
-                        e
-                    )
-                })?;
-                let dims = img.dimensions();
-                if dims != (1920, 1440) {
-                    Err(format!(
-                        "Invalid image dimensions for '{}': {:?}. Expected 1920x1440.",
-                        path_clone.display(),
-                        dims
-                    ))?
-                }
-
-                // 2. Copy the image to the data directory (gets unique filename)
-                let (new_image_path_in_data, unique_filename_str) = 
-                    persistence::copy_image_to_data(&path_clone, &data_dir_clone, &map_name_clone)
-                        .map_err(|e| {
-                            format!(
-                                "Failed to copy image '{}' to data directory: {}",
-                                path_clone.display(),
-                                e
-                            )
-                        })?;
-
-                // 3. Generate thumbnails for this newly copied unique file
-                let thumb_dir = data_dir_clone.join(&map_name_clone).join(".thumbnails");
-                generate_all_thumbnails(&new_image_path_in_data, &thumb_dir);
-
-                // 4. Construct ImageMeta with the unique filename
-                Ok(ImageMeta {
-                    filename: unique_filename_str, // This is the unique, timestamped filename
-                    map: map_name_clone,          // The map it belongs to
-                    nade_type,                   // NadeType (Smoke, Flash, etc.)
-                    notes,                       // User-provided notes
-                    position,                    // User-provided position identifier
-                })
-            })(); // End of IIFE
-
-            if let Err(e) = tx.send(result) {
-                log::error!(
-                    "Failed to send upload result for '{}': {}",
-                    path_clone.display(),
-                    e
-                );
-            }
-            ctx_clone.request_repaint(); // Request repaint from the worker thread
-        });
-
-        // Add the task to the uploads queue for main thread processing
-        self.uploads.push(app_logic::upload_processor::UploadTask {
-            map: self.current_map.clone(), // Map context for the upload
-            rx, // Receiver for the result
-            status: app_logic::upload_processor::UploadStatus::InProgress,
-            finished_time: None,
-            start_time: Instant::now(),
-        });
-    }
+        } // Closes match
+    } // Closes load_detail_image
 
     fn handle_confirm_image_delete(&mut self, meta_to_delete: ImageMeta, ctx: &egui::Context) {
-        let filename_to_delete = meta_to_delete.filename.clone();
-        let map_name_of_deleted = meta_to_delete.map.clone();
+        let filename_to_delete = meta_to_delete.filename.clone(); // Keep for logging and cache clearing
 
-        let mut image_path_in_data_dir = self.data_dir.clone();
-        image_path_in_data_dir.push(&map_name_of_deleted);
-        image_path_in_data_dir.push(&filename_to_delete);
-
-        if let Err(e) = std::fs::remove_file(&image_path_in_data_dir) {
-            log::error!(
-                "Failed to delete image file {}: {}",
-                image_path_in_data_dir.display(),
-                e
-            );
-            self.error_message = Some(format!("Failed to delete image file: {}", e));
-        }
-
-        let thumb_base_dir = self.data_dir.join(&meta_to_delete.map).join(".thumbnails");
-        for &size in thumbnail::ALLOWED_THUMB_SIZES.iter() {
-            let thumb_path_to_delete = thumbnail::thumbnail_path(
-                &image_path_in_data_dir, // This should be the original image path in data_dir
-                &thumb_base_dir,
-                size,
-            );
-            if let Err(e) = std::fs::remove_file(&thumb_path_to_delete) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    log::error!(
-                        "Failed to delete thumbnail file {}: {}",
-                        thumb_path_to_delete.display(),
-                        e
-                    );
-                }
-            }
-        }
-
-        log::debug!("[Delete Flow] Meta to delete: {:?}", meta_to_delete);
-        if let Some(images_in_map_before_retain) =
-            self.image_manifest.images.get(&map_name_of_deleted)
+        // Call ImageService to handle deletion (file removal, manifest update, manifest save)
+        match self
+            .app_state
+            .image_service
+            .delete_image(&meta_to_delete, &mut self.app_state.image_manifest)
         {
-            log::debug!(
-                "[Delete Flow] Images in map '{}' before retain:",
-                map_name_of_deleted
-            );
-            for (index, existing_meta) in images_in_map_before_retain.iter().enumerate() {
-                let is_equal = existing_meta == &meta_to_delete;
-                log::debug!(
-                    "  [{}]: {:?} (Is equal to meta_to_delete: {})",
-                    index,
-                    existing_meta,
-                    is_equal
+            Ok(_) => {
+                log::info!(
+                    "Image '{}' deleted successfully via ImageService.",
+                    filename_to_delete
                 );
+                self.app_state.error_message = None; // Clear previous error on successful deletion
+            }
+            Err(e) => {
+                log::error!(
+                    "ImageService failed to delete image '{}': {}",
+                    filename_to_delete,
+                    e
+                );
+                self.app_state.error_message = Some(format!("Failed to delete image: {}", e));
+                // Note: Even if ImageService fails, we proceed to UI cleanup.
+                // Depending on the error, some parts (like file deletion) might have partially succeeded.
             }
         }
 
-        if let Some(images_for_map) = self.image_manifest.images.get_mut(&map_name_of_deleted) {
-            images_for_map.retain(|meta| meta != &meta_to_delete);
-            log::debug!(
-                "[Delete Flow] Images in map '{}' after retain: {:?}",
-                map_name_of_deleted,
-                images_for_map
-            );
-        } else {
-            log::warn!(
-                "[Delete Flow] No images found for map '{}' during retain operation.",
-                map_name_of_deleted
-            );
-        }
-
-        // Clear thumbnail cache for the deleted image
-        self.thumbnail_cache.remove_image_thumbnails(
-            &filename_to_delete,
-            &map_name_of_deleted,
-            &self.data_dir,
-        );
+        // The on-disk thumbnails are deleted by ImageService -> PersistenceService -> ThumbnailService.
+        // UI elements (grid, detail view) will refresh based on the updated image_manifest / current_map_images.
+        // The detail_view_texture_handle is cleared separately.
+        // No explicit, separate UI-wide thumbnail cache object needs manual clearing here beyond what egui manages for displayed textures.
         log::debug!(
-            "Attempted to remove thumbnails for '{}' from map '{}' from the new cache.",
-            filename_to_delete,
-            map_name_of_deleted
+            "Image deletion process completed for: '{}'. UI will refresh.",
+            filename_to_delete
         );
 
-        if let Err(e) = save_manifest(&self.image_manifest, &self.data_dir) {
-            log::error!("Error saving manifest after delete: {}", e);
-            self.error_message = Some(format!("Failed to save changes after delete: {}", e));
-        } else {
-            log::info!(
-                "Manifest saved successfully after deleting '{}'.",
-                filename_to_delete
-            );
-            self.error_message = None; // Clear previous error on successful save
-        }
-        self.selected_image_for_detail = None;
-        self.detail_view_texture_handle = None;
-        self.show_delete_confirmation = None;
-        self.filter_images_for_current_map();
+        // UI state updates
+        self.app_state.selected_image_for_detail = None;
+        self.app_state.detail_view_texture_handle = None;
+        self.app_state.show_delete_confirmation = None;
+        self.filter_images_for_current_map(); // Refresh the grid view
         ctx.request_repaint();
     }
 
@@ -484,53 +145,390 @@ impl NadexApp {
         form_data_to_save: ui::edit_view::EditFormData,
         ctx: &egui::Context,
     ) {
-        if let Some(image_to_update) = self
-            .image_manifest
-            .images
-            .values_mut()
-            .flatten()
-            .find(|img| img.filename == form_data_to_save.filename)
-        {
-            image_to_update.nade_type = form_data_to_save.nade_type;
-            image_to_update.position = form_data_to_save.position.clone();
-            image_to_update.notes = form_data_to_save.notes.clone();
-
-            if let Err(e) = save_manifest(&self.image_manifest, &self.data_dir) {
-                log::error!("Error saving manifest after edit: {}", e);
-                self.error_message = Some(format!("Failed to save changes: {}", e));
-            } else {
-                log::info!(
-                    "Manifest saved successfully after editing '{}'.",
-                    form_data_to_save.filename
-                );
-                self.error_message = None; // Clear error on successful save
+        // Get the original metadata, which includes the map name
+        if let Some(original_meta) = self.app_state.editing_image_meta.clone() {
+            match self.app_state.image_service.update_image_metadata(
+                &mut self.app_state.image_manifest,
+                &original_meta, // Pass the original meta to locate the image in the correct map
+                &form_data_to_save,
+            ) {
+                Ok(_) => {
+                    log::info!(
+                        "Image metadata updated and manifest saved successfully via ImageService for '{}'.",
+                        form_data_to_save.filename
+                    );
+                    self.app_state.error_message = None;
+                }
+                Err(e) => {
+                    log::error!(
+                        "ImageService failed to update image metadata or save manifest: {}",
+                        e
+                    );
+                    self.app_state.error_message = Some(format!("Failed to save changes: {}", e));
+                }
             }
-            self.editing_image_meta = None;
-            self.edit_form_data = None;
+
+            // Common cleanup regardless of success or failure of the service call or save
+            self.app_state.editing_image_meta = None;
+            self.app_state.edit_form_data = None;
             self.filter_images_for_current_map(); // Refresh the view
             ctx.request_repaint();
         } else {
             log::error!(
-                "Error: Could not find image to update after edit: {}",
+                "Critical Error: editing_image_meta was None when trying to save edit for {}. This should not happen.",
                 form_data_to_save.filename
             );
-            self.error_message = Some(format!(
-                "Failed to find image {} to update.",
-                form_data_to_save.filename
-            ));
+            self.app_state.error_message =
+                Some("Internal error: No image was being edited. Please try again.".to_string());
+            // Also clear edit state here to prevent further issues
+            self.app_state.editing_image_meta = None;
+            self.app_state.edit_form_data = None;
         }
     }
 }
 
 impl eframe::App for NadexApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        app_logic::upload_processor::process_upload_tasks(self, ctx);
+        // --- Process AppActions ---
 
-        // Top Bar (already refactored)
-        egui::TopBottomPanel::top("top_panel").show(ctx, |top_ui| {
-            if let Some(action) = ui::top_bar_view::show_top_bar(self, top_ui) {
-                self.handle_top_bar_action(ctx, action);
+        // Check for results from background upload threads
+        let mut received_actions_from_thread = false; // Initialize flag
+        while let Ok(action_from_thread) = self.app_state.upload_result_receiver.try_recv() {
+            log::info!(
+                "Received action from background thread: {:?}",
+                action_from_thread
+            );
+            self.action_queue.push(action_from_thread);
+            received_actions_from_thread = true; // Set flag
+        }
+
+        if received_actions_from_thread {
+            ctx.request_repaint(); // Request repaint if actions were received
+        }
+
+        // Process results from thumbnail loading thread
+        let thumb_results: Vec<_> = self
+            .app_state
+            .thumbnail_result_receiver
+            .try_iter()
+            .collect();
+        if !thumb_results.is_empty() && self
+                .app_state
+                .thumbnail_service
+                .lock()
+                .unwrap()
+                .process_loaded_thumbnails(ctx, thumb_results) {
+            ctx.request_repaint(); // Request repaint if new thumbnails were loaded
+        }
+
+        let actions_to_process = self.action_queue.drain(..).collect::<Vec<_>>();
+        if !actions_to_process.is_empty() {
+            for action in actions_to_process {
+                match action {
+                    AppAction::SelectMap(map_name) => {
+                        self.app_state.current_map = map_name;
+                        self.filter_images_for_current_map();
+                        self.app_state.selected_image_for_detail = None;
+                        self.app_state.detail_view_texture_handle = None;
+                        // It's good practice to request repaint if state that affects UI changes.
+                        ctx.request_repaint();
+                    }
+                    AppAction::SubmitUpload {
+                        file_path,
+                        map_name,
+                        nade_type,
+                        position,
+                        notes,
+                    } => {
+                        log::info!(
+                            "Offloading SubmitUpload for map: {}, file: {:?}",
+                            map_name,
+                            file_path
+                        );
+
+                        let image_service_clone = Arc::clone(&self.app_state.image_service);
+                        let sender_clone = self.app_state.upload_result_sender.clone();
+                        // Clone other data needed by the thread
+                        let file_path_clone = file_path.clone();
+                        let map_name_clone = map_name.clone();
+                        // nade_type, position, notes are Copy or easily clonable
+
+                        let initial_manifest_clone = self.app_state.image_manifest.clone();
+                        std::thread::spawn(move || {
+                            log::info!(
+                                "Background thread: Delegating to ImageService.orchestrate_full_upload_process for file: {:?}",
+                                file_path_clone
+                            );
+                            image_service_clone.orchestrate_full_upload_process(
+                                file_path_clone,
+                                map_name_clone,
+                                nade_type,
+                                position,
+                                notes,
+                                initial_manifest_clone, // Use the manifest cloned outside the thread
+                                sender_clone,
+                            );
+                            // ImageService::orchestrate_full_upload_process will send
+                            // AppAction::UploadSucceededBackgroundTask or AppAction::UploadFailed
+                            // via the sender_clone. No need to send actions from this thread.
+                        });
+
+                        // The UI thread continues, spinner is managed by SetProcessingUpload actions.
+                        ctx.request_repaint();
+                    }
+                    AppAction::SetProcessingUpload(is_processing) => {
+                        log::info!("Setting is_processing_upload to: {}", is_processing);
+                        self.app_state.is_processing_upload = is_processing;
+                        ctx.request_repaint();
+                    }
+                    AppAction::UploadSucceededBackgroundTask {
+                        new_image_meta,
+                        map_name,
+                    } => {
+                        log::info!(
+                            "Processing UploadSucceededBackgroundTask for image: {:?}, map: {}",
+                            new_image_meta.filename,
+                            map_name
+                        );
+                        // Update in-memory manifest
+                        let is_current_map = map_name == self.app_state.current_map; // Compare before map_name is moved
+
+                        self.app_state
+                            .image_manifest
+                            .images
+                            .entry(map_name) // map_name is moved here
+                            .or_default()
+                            .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
+
+                        // Request thumbnail generation for the new image
+                        // We use new_image_meta.map and new_image_meta.filename which are available after the clone.
+                        let image_map_name_for_thumb = new_image_meta.map.clone();
+                        let image_filename_for_thumb = new_image_meta.filename.clone();
+                        let target_thumb_size = self.app_state.grid_image_size as u32;
+
+                        let image_full_path_for_thumb = self
+                            .app_state
+                            .data_dir
+                            .join(&image_map_name_for_thumb)
+                            .join(&image_filename_for_thumb);
+                        let thumbnails_storage_dir = self
+                            .app_state
+                            .data_dir
+                            .join(&image_map_name_for_thumb)
+                            .join(".thumbnails");
+
+                        log::info!(
+                            "Requesting thumbnail for image path: {:?}, target size: {}, thumbnail directory: {:?}",
+                            image_full_path_for_thumb,
+                            target_thumb_size,
+                            thumbnails_storage_dir
+                        );
+
+                        match self.app_state.thumbnail_service.lock() {
+                            Ok(mut thumbnail_service_guard) => {
+                                if let Err(e) = thumbnail_service_guard
+                                    .request_thumbnail_generation(
+                                        image_full_path_for_thumb,
+                                        thumbnails_storage_dir,
+                                        target_thumb_size,
+                                    )
+                                {
+                                    log::error!(
+                                        "Failed to request thumbnail generation for '{}' in map '{}': {}",
+                                        image_filename_for_thumb,
+                                        image_map_name_for_thumb,
+                                        e
+                                    );
+                                    // Optionally, set an error message in app_state if this failure is critical.
+                                    // For now, just logging, as the main image is uploaded and manifest saving is handled separately.
+                                }
+                            }
+                            Err(poison_err) => {
+                                log::error!(
+                                    "Failed to acquire lock on thumbnail_service for image '{}': {}",
+                                    image_filename_for_thumb,
+                                    poison_err
+                                );
+                                // Handle poisoned mutex, perhaps by setting a critical app error that the user can see.
+                            }
+                        }
+
+                        // If the uploaded image is for the currently viewed map, update current_map_images directly.
+                        if is_current_map {
+                            self.app_state.current_map_images.push(new_image_meta); // Original new_image_meta is moved here
+                            self.app_state
+                                .current_map_images
+                                .sort_by(|a, b| a.filename.cmp(&b.filename));
+                        } else {
+                            // If the upload was for a different map, filter_images_for_current_map will handle it
+                            // when that map is next selected. The original new_image_meta is dropped here if not used,
+                            // which is fine as it's already cloned into the manifest.
+                        }
+                        self.app_state.error_message = None; // Clear any previous error, UI part was fine.
+
+                        // Manifest saving is now orchestrated by ImageService after this action is sent.
+                        // NadexApp only needs to update its in-memory state here.
+                        // A repaint is good to reflect the new image in the grid immediately.
+                        ctx.request_repaint();
+                    }
+                    AppAction::UploadFailed { error_message } => {
+                        log::error!("Processing UploadFailed action: {:?}", error_message);
+                        self.app_state.error_message = error_message;
+                        self.action_queue
+                            .push(AppAction::SetProcessingUpload(false)); // Hide spinner
+                        ctx.request_repaint();
+                    }
+                    AppAction::ManifestSaveCompleted {
+                        success,
+                        error_message,
+                    } => {
+                        log::info!(
+                            "Processing ManifestSaveCompleted: success={}, error_message={:?}",
+                            success,
+                            error_message
+                        );
+                        self.app_state.is_processing_upload = false; // Hide spinner
+                        if !success {
+                            self.app_state.error_message = error_message.or_else(|| {
+                                Some("Failed to save manifest after upload.".to_string())
+                            });
+                        } else {
+                            self.app_state.error_message = None; // Clear any previous error
+                        }
+                        ctx.request_repaint();
+                    }
+                    AppAction::SetGridImageSize(size) => {
+                        self.app_state.grid_image_size = size;
+                        // TODO: Consider if thumbnail cache needs pruning/clearing here or if it's handled elsewhere.
+                        // For now, a simple repaint should reflect the size change in how items are laid out or scaled.
+                        ctx.request_repaint();
+                    }
+                    AppAction::ShowUploadModal => {
+                        self.app_state.show_upload_modal = true;
+                        // Repaint is likely handled by the modal itself when it shows.
+                    }
+                    AppAction::SetNadeFilter(nade_type) => {
+                        self.app_state.selected_nade_type = nade_type;
+                        self.filter_images_for_current_map();
+                        self.app_state.selected_image_for_detail = None; // Clear detail view if filter changes
+                        self.app_state.detail_view_texture_handle = None;
+                        ctx.request_repaint();
+                    }
+                    AppAction::ImageGridImageClicked(meta) => {
+                        if self
+                            .app_state
+                            .selected_image_for_detail
+                            .as_ref()
+                            .is_some_and(|selected| selected.filename == meta.filename)
+                        {
+                            self.app_state.selected_image_for_detail = None;
+                            self.app_state.detail_view_texture_handle = None;
+                        } else {
+                            self.app_state.selected_image_for_detail = Some(meta.clone());
+                            self.app_state.detail_view_texture_handle = None; // Texture will be loaded
+                            self.load_detail_image(ctx, &meta);
+                        }
+                        ctx.request_repaint();
+                    }
+                    AppAction::DetailModalClose => {
+                        self.app_state.selected_image_for_detail = None;
+                        self.app_state.detail_view_texture_handle = None;
+                        self.app_state.detail_view_error = None;
+                        self.app_state.editing_image_meta = None;
+                        self.app_state.edit_form_data = None;
+                        ctx.request_repaint();
+                    }
+                    AppAction::DetailModalRequestEdit(meta) => {
+                        self.app_state.editing_image_meta = Some(meta.clone());
+                        self.app_state.edit_form_data =
+                            Some(ui::edit_view::EditFormData::from_meta(&meta));
+                        self.app_state.selected_image_for_detail = None;
+                        self.app_state.detail_view_texture_handle = None;
+                        self.app_state.detail_view_error = None;
+                        ctx.request_repaint();
+                    }
+                    AppAction::DetailModalRequestDelete(meta) => {
+                        self.app_state.show_delete_confirmation = Some(meta);
+                        self.app_state.selected_image_for_detail = None;
+                        self.app_state.detail_view_texture_handle = None;
+                        self.app_state.detail_view_error = None;
+                        ctx.request_repaint();
+                    }
+                    AppAction::EditModalSave(form_data) => {
+                        self.handle_save_image_edit(form_data, ctx);
+                        // Note: handle_save_image_edit should handle repainting and clearing editing_image_meta/edit_form_data on success/failure.
+                    }
+                    AppAction::EditModalCancel => {
+                        self.app_state.editing_image_meta = None;
+                        self.app_state.edit_form_data = None;
+                        self.app_state.error_message = None; // Clear any potential error from a previous failed edit attempt
+                        ctx.request_repaint();
+                    }
+                    AppAction::DeleteConfirm => {
+                        if let Some(meta_to_delete) =
+                            self.app_state.show_delete_confirmation.clone()
+                        {
+                            // It's important that handle_confirm_image_delete also sets show_delete_confirmation to None.
+                            // Or, we do it here explicitly before/after the call if it doesn't.
+                            // Based on old comment, handle_confirm_image_delete handles this.
+                            self.handle_confirm_image_delete(meta_to_delete, ctx);
+                        } else {
+                            // This case should ideally not happen if DeleteConfirm is only sent when modal is shown.
+                            log::warn!(
+                                "DeleteConfirm action received but no image was marked for deletion."
+                            );
+                        }
+                    }
+                    AppAction::DeleteCancel => {
+                        self.app_state.show_delete_confirmation = None;
+                        ctx.request_repaint();
+                    }
+                } // End match action
+            } // End for loop
+        } // End if !actions_to_process.is_empty()
+
+        // Check for completed thumbnail jobs
+        while let Ok(result) = self.app_state.thumbnail_result_receiver.try_recv() {
+            if let Some(err_msg) = &result.error {
+                log::error!(
+                    "Thumbnail generation failed for key '{}': {}",
+                    result.thumb_path_key,
+                    err_msg
+                );
+            } else if let Some(color_image) = result.color_image {
+                if let Some(dimensions) = result.dimensions {
+                    log::debug!(
+                        "Received thumbnail for key '{}', w: {}, h: {}",
+                        result.thumb_path_key,
+                        dimensions.0,
+                        dimensions.1
+                    );
+                    // Lock the thumbnail_service and process the completed job
+                    // Ensure thumbnail_service is Arc<Mutex<ConcreteThumbnailService>> or similar
+                    let mut thumbnail_service = self.app_state.thumbnail_service.lock().unwrap();
+                    thumbnail_service.process_completed_job(
+                        result.thumb_path_key,
+                        color_image,
+                        dimensions,
+                        ctx, // Pass the egui::Context
+                    );
+                } else {
+                    log::error!(
+                        "Thumbnail generation succeeded for key '{}' but dimensions are missing.",
+                        result.thumb_path_key
+                    );
+                }
+            } else {
+                log::warn!(
+                    "Received thumbnail result for key '{}' with no image and no error.",
+                    result.thumb_path_key
+                );
             }
+        }
+
+        // Top Bar
+        egui::TopBottomPanel::top("top_panel").show(ctx, |top_ui| {
+            ui::top_bar_view::show_top_bar(&mut self.app_state, top_ui, &mut self.action_queue);
         });
 
         // Main Central Panel
@@ -542,72 +540,50 @@ impl eframe::App for NadexApp {
                 bottom: 0.0,
             }))
             .show(ctx, |panel_ui| {
-                // Show upload overlay if any upload is in progress
-                let num_uploads_in_progress = self
-                    .uploads
-                    .iter()
-                    .filter(|u| u.status == app_logic::upload_processor::UploadStatus::InProgress)
-                    .count();
-                if num_uploads_in_progress > 0 {
-                    egui::Window::new("Uploading...")
-                        .anchor(egui::Align2::CENTER_CENTER, [0.0_f32, 0.0_f32])
-                        .collapsible(false)
-                        .resizable(false)
-                        .title_bar(false)
-                        .show(ctx, |ui| {
-                            ui.label("Uploading and processing image...");
-                            ui.add(egui::Spinner::default());
-                        });
-                }
-
                 // Show error message if any
-                if let Some(ref msg) = self.error_message {
+                if let Some(ref msg) = self.app_state.error_message {
                     panel_ui.colored_label(egui::Color32::RED, msg);
                 }
 
                 panel_ui.add_space(4.0);
 
-                // Call the new image grid view function
-                if let Some(grid_action) = ui::image_grid_view::show_image_grid(self, panel_ui) {
-                    self.handle_image_grid_action(ctx, grid_action);
+                // Call the refactored image grid view function
+                ui::image_grid_view::show_image_grid(
+                    &mut self.app_state,
+                    panel_ui,
+                    &mut self.action_queue,
+                );
+
+                // --- Image Detail View Modal ---
+                if self.app_state.selected_image_for_detail.is_some() {
+                    // panel_ui is in scope here
+                    ui::detail_view::show_detail_modal(
+                        &mut self.app_state,
+                        panel_ui,
+                        &mut self.action_queue,
+                    );
                 }
             });
 
-        // --- Upload Modal (Refactored) ---
-        if self.show_upload_modal {
-            if let Some(action) = ui::upload_modal_view::show_upload_modal(self, ctx) {
-                self.handle_upload_modal_action(ctx, action);
-            }
-        }
+        // --- Upload Progress Indicator ---
+        ui::progress_indicator_view::show(ctx, self.app_state.is_processing_upload);
 
-        // --- Image Detail View Modal ---
-        if let Some(selected_meta_clone) = self.selected_image_for_detail.clone() {
-            // Construct the view state required by ui::detail_view::show_detail_modal
-            let mut view_state = ui::detail_view::DetailModalViewState {
-                ctx, // Pass the context
-                screen_rect: ctx.screen_rect(),
-                selected_image_meta: &selected_meta_clone, // Pass the cloned meta
-                detail_view_texture_handle: &self.detail_view_texture_handle, // Pass ref to Option<TextureHandle>
-                                                                              // error_message and is_editing are not part of the detail_view.rs's DetailModalViewState
-                                                                              // Those will be handled by NadexApp based on the action or other state
-            };
-
-            // The show_detail_modal function in detail_view.rs now takes &mut DetailModalViewState
-            // and NadexApp itself is no longer passed directly to it.
-            // Instead, NadexApp fields are accessed via the DetailModalViewState or handled by NadexApp after an action.
-            if let Some(action) = ui::detail_view::show_detail_modal(&mut view_state) {
-                self.handle_detail_modal_action(action);
-            }
+        // --- Upload Modal ---
+        if self.app_state.show_upload_modal {
+            self.upload_modal
+                .show(ctx, &mut self.app_state, &mut self.action_queue);
         }
 
         // --- Edit Image Modal (Refactored) ---
-        if let Some(current_editing_meta) = &self.editing_image_meta.clone() {
-            if self.edit_form_data.is_none()
-                || self.edit_form_data.as_ref().map_or(true, |data| {
-                    &data.filename != &current_editing_meta.filename
-                })
+        if let Some(current_editing_meta) = &self.app_state.editing_image_meta.clone() {
+            if self.app_state.edit_form_data.is_none()
+                || self
+                    .app_state
+                    .edit_form_data
+                    .as_ref()
+                    .is_none_or(|data| data.filename != current_editing_meta.filename)
             {
-                self.edit_form_data = Some(ui::edit_view::EditFormData {
+                self.app_state.edit_form_data = Some(ui::edit_view::EditFormData {
                     filename: current_editing_meta.filename.clone(),
                     nade_type: current_editing_meta.nade_type,
                     position: current_editing_meta.position.clone(),
@@ -615,20 +591,17 @@ impl eframe::App for NadexApp {
                 });
             }
 
-            if let Some(action) = ui::edit_view::show_edit_modal(self, ctx) {
-                self.handle_edit_modal_action(ctx, action);
-            }
+            ui::edit_view::show_edit_modal(&mut self.app_state, ctx, &mut self.action_queue);
         }
 
         // --- Delete Confirmation Modal (Refactored) ---
-        if let Some(meta_to_delete) = self.show_delete_confirmation.clone() {
-            if let Some(action) = ui::delete_confirmation_view::show_delete_confirmation_modal(
-                self,
+        if let Some(meta_to_delete) = self.app_state.show_delete_confirmation.clone() {
+            ui::delete_confirmation_view::show_delete_confirmation_modal(
+                &mut self.app_state,
                 ctx,
                 &meta_to_delete,
-            ) {
-                self.handle_delete_confirmation_action(ctx, action, meta_to_delete);
-            }
+                &mut self.action_queue,
+            );
         }
     }
 }

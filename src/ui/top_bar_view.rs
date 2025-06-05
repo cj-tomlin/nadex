@@ -1,26 +1,15 @@
-use egui::Ui;
-use crate::NadexApp;
+use crate::app_actions::AppAction;
+use crate::app_state::AppState;
 use crate::persistence::NadeType;
-use crate::thumbnail::ALLOWED_THUMB_SIZES;
-
-/// Actions that can be triggered from the top bar.
-#[derive(Debug)]
-pub enum TopBarAction {
-    MapSelected(String),
-    NadeTypeFilterChanged(Option<NadeType>),
-    ImageSizeChanged(f32),
-    UploadButtonPushed,
-}
+use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
+use egui::Ui;
 
 /// Renders the top bar UI elements (map selection, filters, upload button, etc.).
-/// 
-/// Returns `Option<TopBarAction>` if an action was taken by the user.
 pub fn show_top_bar(
-    app_state: &mut NadexApp,
+    app_state: &mut AppState, // Keep &mut for direct UI state like selected_nade_type, grid_image_size updates for immediate feedback
     ui: &mut Ui,
-) -> Option<TopBarAction> {
-    let mut action: Option<TopBarAction> = None;
-
+    action_queue: &mut Vec<AppAction>,
+) {
     ui.horizontal(|ui_content| {
         // Map selection icon
         ui_content.label("Map:");
@@ -29,13 +18,21 @@ pub fn show_top_bar(
             .selected_text(&selected_map_text)
             .show_ui(ui_content, |ui_combo| {
                 for map_name_str in &app_state.maps {
-                    let mut map_selectable = app_state.current_map.clone();
+                    // For ComboBox, we need a mutable variable to bind to, even if we don't use its changed state directly for app_state.current_map.
+                    // The actual change is driven by the action.
+                    let mut current_selection_for_combo = app_state.current_map.clone();
                     if ui_combo
-                        .selectable_value(&mut map_selectable, map_name_str.to_string(), *map_name_str)
+                        .selectable_value(
+                            &mut current_selection_for_combo,
+                            map_name_str.to_string(),
+                            *map_name_str,
+                        )
                         .changed()
                     {
-                        app_state.current_map = map_selectable.clone();
-                        action = Some(TopBarAction::MapSelected(map_selectable));
+                        // Only push action if the selection actually changed to the new map_name_str
+                        if app_state.current_map != *map_name_str {
+                            action_queue.push(AppAction::SelectMap(map_name_str.to_string()));
+                        }
                     }
                 }
             });
@@ -46,6 +43,8 @@ pub fn show_top_bar(
             .iter()
             .position(|&s| s == app_state.grid_image_size as u32)
             .unwrap_or(0);
+        // Create a temporary mutable variable for the ComboBox to bind to.
+        let mut temp_selected_idx = current_thumb_idx;
         egui::ComboBox::new("thumb_size_select_top_bar", "")
             .selected_text(format!(
                 "{} px",
@@ -56,15 +55,15 @@ pub fn show_top_bar(
             ))
             .show_ui(ui_content, |ui_combo| {
                 for (i, &sz) in ALLOWED_THUMB_SIZES.iter().enumerate() {
-                    let mut temp_idx = current_thumb_idx;
                     if ui_combo
-                        .selectable_value(&mut temp_idx, i, format!("{} px", sz))
+                        .selectable_value(&mut temp_selected_idx, i, format!("{} px", sz))
                         .clicked()
+                        && app_state.grid_image_size != sz as f32
                     {
-                         if app_state.grid_image_size != sz as f32 {
-                            app_state.grid_image_size = sz as f32;
-                            action = Some(TopBarAction::ImageSizeChanged(app_state.grid_image_size));
-                         }
+                        // The AppState will be updated by the action handler, but for immediate UI feedback in the combo box text,
+                        // we can update it here. However, the canonical way is to let the action handler do it.
+                        // For now, let's rely on the action handler to update app_state.grid_image_size.
+                        action_queue.push(AppAction::SetGridImageSize(sz as f32));
                     }
                 }
             });
@@ -75,7 +74,7 @@ pub fn show_top_bar(
             .on_hover_text("Upload Screenshot")
             .clicked()
         {
-            action = Some(TopBarAction::UploadButtonPushed);
+            action_queue.push(AppAction::ShowUploadModal);
         }
 
         // Nade Type Filter Buttons
@@ -92,8 +91,7 @@ pub fn show_top_bar(
         ];
 
         let text_color_selected = ui_content.style().visuals.selection.stroke.color;
-        let text_color_unselected =
-            ui_content.style().visuals.widgets.inactive.text_color();
+        let text_color_unselected = ui_content.style().visuals.widgets.inactive.text_color();
 
         for (filter_option, label_str) in nade_types_options {
             let is_selected = app_state.selected_nade_type == filter_option;
@@ -112,15 +110,11 @@ pub fn show_top_bar(
                 button = button.fill(egui::Color32::TRANSPARENT);
             }
 
-            if ui_content.add(button).clicked() {
-                if app_state.selected_nade_type != filter_option {
-                    app_state.selected_nade_type = filter_option;
-                    action = Some(TopBarAction::NadeTypeFilterChanged(filter_option));
-                }
+            if ui_content.add(button).clicked() && app_state.selected_nade_type != filter_option {
+                // Similar to image size, the AppState will be updated by the action handler.
+                action_queue.push(AppAction::SetNadeFilter(filter_option));
             }
         }
         ui_content.style_mut().spacing.item_spacing.x = original_item_spacing;
     });
-
-    action
 }
