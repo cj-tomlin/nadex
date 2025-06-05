@@ -3,6 +3,11 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use strum_macros::EnumIter;
 
+// Re-export ALLOWED_THUMB_SIZES from the thumbnail_service module
+// so it's available via crate::persistence::ALLOWED_THUMB_SIZES
+#[allow(unused_imports)]
+pub use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, EnumIter)]
 pub enum NadeType {
     #[default]
@@ -21,12 +26,12 @@ pub struct ImageMeta {
     pub position: String, // Where this nade is for (e.g., "A Main Smoke")
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct MapMeta {
     pub last_accessed: SystemTime,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ImageManifest {
     pub images: HashMap<String, Vec<ImageMeta>>, // map_name -> Vec<ImageMeta>
     pub maps: HashMap<String, MapMeta>,          // map_name -> MapMeta

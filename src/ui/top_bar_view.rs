@@ -58,14 +58,12 @@ pub fn show_top_bar(
                     if ui_combo
                         .selectable_value(&mut temp_selected_idx, i, format!("{} px", sz))
                         .clicked()
-                    // Using clicked() is fine here as we check the actual value change below
+                        && app_state.grid_image_size != sz as f32
                     {
-                        if app_state.grid_image_size != sz as f32 {
-                            // The AppState will be updated by the action handler, but for immediate UI feedback in the combo box text,
-                            // we can update it here. However, the canonical way is to let the action handler do it.
-                            // For now, let's rely on the action handler to update app_state.grid_image_size.
-                            action_queue.push(AppAction::SetGridImageSize(sz as f32));
-                        }
+                        // The AppState will be updated by the action handler, but for immediate UI feedback in the combo box text,
+                        // we can update it here. However, the canonical way is to let the action handler do it.
+                        // For now, let's rely on the action handler to update app_state.grid_image_size.
+                        action_queue.push(AppAction::SetGridImageSize(sz as f32));
                     }
                 }
             });
@@ -112,11 +110,9 @@ pub fn show_top_bar(
                 button = button.fill(egui::Color32::TRANSPARENT);
             }
 
-            if ui_content.add(button).clicked() {
-                if app_state.selected_nade_type != filter_option {
-                    // Similar to image size, the AppState will be updated by the action handler.
-                    action_queue.push(AppAction::SetNadeFilter(filter_option));
-                }
+            if ui_content.add(button).clicked() && app_state.selected_nade_type != filter_option {
+                // Similar to image size, the AppState will be updated by the action handler.
+                action_queue.push(AppAction::SetNadeFilter(filter_option));
             }
         }
         ui_content.style_mut().spacing.item_spacing.x = original_item_spacing;

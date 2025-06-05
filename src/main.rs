@@ -1,7 +1,6 @@
 use crate::persistence::ImageMeta;
+use crate::services::thumbnail_service::ThumbnailServiceTrait;
 use eframe::{NativeOptions, egui};
-use env_logger; // Import env_logger
-use image;
 
 use log::{self, LevelFilter};
 
@@ -12,11 +11,14 @@ use crate::ui::upload_modal_view::UploadModal; // Added import
 use std::sync::Arc;
 
 mod app_actions;
-mod app_logic;
 mod app_state;
+pub mod common;
 mod persistence;
 mod services;
 mod ui;
+
+#[cfg(test)]
+pub mod tests_common;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -176,9 +178,8 @@ impl NadexApp {
                 "Critical Error: editing_image_meta was None when trying to save edit for {}. This should not happen.",
                 form_data_to_save.filename
             );
-            self.app_state.error_message = Some(format!(
-                "Internal error: No image was being edited. Please try again."
-            ));
+            self.app_state.error_message =
+                Some("Internal error: No image was being edited. Please try again.".to_string());
             // Also clear edit state here to prevent further issues
             self.app_state.editing_image_meta = None;
             self.app_state.edit_form_data = None;
@@ -206,13 +207,17 @@ impl eframe::App for NadexApp {
         }
 
         // Process results from thumbnail loading thread
-        if self
+        let thumb_results: Vec<_> = self
             .app_state
-            .thumbnail_service
-            .lock()
-            .unwrap()
-            .process_background_loads(ctx)
-        {
+            .thumbnail_result_receiver
+            .try_iter()
+            .collect();
+        if !thumb_results.is_empty() && self
+                .app_state
+                .thumbnail_service
+                .lock()
+                .unwrap()
+                .process_loaded_thumbnails(ctx, thumb_results) {
             ctx.request_repaint(); // Request repaint if new thumbnails were loaded
         }
 
@@ -295,6 +300,59 @@ impl eframe::App for NadexApp {
                             .or_default()
                             .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
 
+                        // Request thumbnail generation for the new image
+                        // We use new_image_meta.map and new_image_meta.filename which are available after the clone.
+                        let image_map_name_for_thumb = new_image_meta.map.clone();
+                        let image_filename_for_thumb = new_image_meta.filename.clone();
+                        let target_thumb_size = self.app_state.grid_image_size as u32;
+
+                        let image_full_path_for_thumb = self
+                            .app_state
+                            .data_dir
+                            .join(&image_map_name_for_thumb)
+                            .join(&image_filename_for_thumb);
+                        let thumbnails_storage_dir = self
+                            .app_state
+                            .data_dir
+                            .join(&image_map_name_for_thumb)
+                            .join(".thumbnails");
+
+                        log::info!(
+                            "Requesting thumbnail for image path: {:?}, target size: {}, thumbnail directory: {:?}",
+                            image_full_path_for_thumb,
+                            target_thumb_size,
+                            thumbnails_storage_dir
+                        );
+
+                        match self.app_state.thumbnail_service.lock() {
+                            Ok(mut thumbnail_service_guard) => {
+                                if let Err(e) = thumbnail_service_guard
+                                    .request_thumbnail_generation(
+                                        image_full_path_for_thumb,
+                                        thumbnails_storage_dir,
+                                        target_thumb_size,
+                                    )
+                                {
+                                    log::error!(
+                                        "Failed to request thumbnail generation for '{}' in map '{}': {}",
+                                        image_filename_for_thumb,
+                                        image_map_name_for_thumb,
+                                        e
+                                    );
+                                    // Optionally, set an error message in app_state if this failure is critical.
+                                    // For now, just logging, as the main image is uploaded and manifest saving is handled separately.
+                                }
+                            }
+                            Err(poison_err) => {
+                                log::error!(
+                                    "Failed to acquire lock on thumbnail_service for image '{}': {}",
+                                    image_filename_for_thumb,
+                                    poison_err
+                                );
+                                // Handle poisoned mutex, perhaps by setting a critical app error that the user can see.
+                            }
+                        }
+
                         // If the uploaded image is for the currently viewed map, update current_map_images directly.
                         if is_current_map {
                             self.app_state.current_map_images.push(new_image_meta); // Original new_image_meta is moved here
@@ -361,7 +419,7 @@ impl eframe::App for NadexApp {
                             .app_state
                             .selected_image_for_detail
                             .as_ref()
-                            .map_or(false, |selected| selected.filename == meta.filename)
+                            .is_some_and(|selected| selected.filename == meta.filename)
                         {
                             self.app_state.selected_image_for_detail = None;
                             self.app_state.detail_view_texture_handle = None;
@@ -429,6 +487,45 @@ impl eframe::App for NadexApp {
             } // End for loop
         } // End if !actions_to_process.is_empty()
 
+        // Check for completed thumbnail jobs
+        while let Ok(result) = self.app_state.thumbnail_result_receiver.try_recv() {
+            if let Some(err_msg) = &result.error {
+                log::error!(
+                    "Thumbnail generation failed for key '{}': {}",
+                    result.thumb_path_key,
+                    err_msg
+                );
+            } else if let Some(color_image) = result.color_image {
+                if let Some(dimensions) = result.dimensions {
+                    log::debug!(
+                        "Received thumbnail for key '{}', w: {}, h: {}",
+                        result.thumb_path_key,
+                        dimensions.0,
+                        dimensions.1
+                    );
+                    // Lock the thumbnail_service and process the completed job
+                    // Ensure thumbnail_service is Arc<Mutex<ConcreteThumbnailService>> or similar
+                    let mut thumbnail_service = self.app_state.thumbnail_service.lock().unwrap();
+                    thumbnail_service.process_completed_job(
+                        result.thumb_path_key,
+                        color_image,
+                        dimensions,
+                        ctx, // Pass the egui::Context
+                    );
+                } else {
+                    log::error!(
+                        "Thumbnail generation succeeded for key '{}' but dimensions are missing.",
+                        result.thumb_path_key
+                    );
+                }
+            } else {
+                log::warn!(
+                    "Received thumbnail result for key '{}' with no image and no error.",
+                    result.thumb_path_key
+                );
+            }
+        }
+
         // Top Bar
         egui::TopBottomPanel::top("top_panel").show(ctx, |top_ui| {
             ui::top_bar_view::show_top_bar(&mut self.app_state, top_ui, &mut self.action_queue);
@@ -480,9 +577,11 @@ impl eframe::App for NadexApp {
         // --- Edit Image Modal (Refactored) ---
         if let Some(current_editing_meta) = &self.app_state.editing_image_meta.clone() {
             if self.app_state.edit_form_data.is_none()
-                || self.app_state.edit_form_data.as_ref().map_or(true, |data| {
-                    &data.filename != &current_editing_meta.filename
-                })
+                || self
+                    .app_state
+                    .edit_form_data
+                    .as_ref()
+                    .is_none_or(|data| data.filename != current_editing_meta.filename)
             {
                 self.app_state.edit_form_data = Some(ui::edit_view::EditFormData {
                     filename: current_editing_meta.filename.clone(),

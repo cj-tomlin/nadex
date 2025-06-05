@@ -6,7 +6,10 @@ use std::sync::mpsc; // Added for channel
 
 use crate::services::image_service::ImageService;
 use crate::services::persistence_service::PersistenceService;
-use crate::services::thumbnail_service::ThumbnailService;
+use crate::services::thumbnail_service::{
+    ConcreteThumbnailService as ThumbnailService, ThumbnailLoadJob, ThumbnailLoadResult,
+    spawn_thumbnail_worker_thread,
+};
 use crate::ui::edit_view::EditFormData; // Assuming EditFormData is pub
 use eframe::egui;
 use std::path::PathBuf;
@@ -50,6 +53,7 @@ pub struct AppState {
     // Channel for upload results from background thread
     pub upload_result_sender: mpsc::Sender<AppAction>,
     pub upload_result_receiver: mpsc::Receiver<AppAction>,
+    pub thumbnail_result_receiver: mpsc::Receiver<ThumbnailLoadResult>,
 }
 
 impl AppState {
@@ -63,7 +67,11 @@ impl AppState {
         ));
 
         // Initialize ThumbnailService before ImageService, as ImageService might depend on it.
-        let thumbnail_service = Arc::new(Mutex::new(ThumbnailService::new()));
+        let (thumb_job_tx, thumb_job_rx) = mpsc::channel::<ThumbnailLoadJob>();
+        let (thumb_result_tx, thumb_result_rx) = mpsc::channel::<ThumbnailLoadResult>();
+        let thumbnail_service = Arc::new(Mutex::new(ThumbnailService::new(thumb_job_tx.clone())));
+        // Spawn the background worker thread for thumbnails
+        spawn_thumbnail_worker_thread(thumb_job_rx, thumb_result_tx);
 
         // Clone Arcs for ImageService initialization
         let ps_clone_for_is = Arc::clone(&persistence_service);
@@ -108,6 +116,7 @@ impl AppState {
             thumbnail_service,   // Use the thumbnail_service initialized earlier
             upload_result_sender: tx,
             upload_result_receiver: rx,
+            thumbnail_result_receiver: thumb_result_rx,
         }
     }
 

@@ -3,6 +3,7 @@ use crate::persistence::{ImageMeta, NadeType};
 use egui::{Rounding, Sense, Ui, Vec2};
 
 use crate::app_actions::AppAction; // Added import
+use crate::services::thumbnail_service::ThumbnailServiceTrait;
 
 /// Renders the main image grid.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
@@ -16,8 +17,7 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
         .current_map_images
         .iter()
         .filter(|meta| {
-            app.selected_nade_type.is_none()
-                || app.selected_nade_type == Some(meta.nade_type.clone())
+            app.selected_nade_type.is_none() || app.selected_nade_type == Some(meta.nade_type)
         })
         .collect();
 
@@ -43,7 +43,7 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
 
         grid.show(ui, |ui| {
             for (i, meta) in filtered_images.iter().enumerate() {
-                let current_meta_ref: &ImageMeta = *meta;
+                let current_meta_ref: &ImageMeta = meta;
 
                 let img_path_check = data_dir_clone
                     .join(&current_meta_ref.map)
@@ -85,19 +85,35 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                     let target_display_size = app.grid_image_size as u32;
                     let mut loaded_thumbnail = false;
 
-                    if let Some((texture_handle, (img_w, img_h))) = app
-                        .thumbnail_service
-                        .lock()
-                        .unwrap()
-                        .get_or_request_thumbnail_texture(
-                            // ui, // Not needed for async version
+                    let thumb_path_key_str =
+                        crate::services::thumbnail_service::module_construct_thumbnail_path(
                             &img_path,
                             &thumb_dir,
                             target_display_size,
                         )
+                        .to_string_lossy()
+                        .into_owned();
+
+                    // Request generation (fire and forget for now, result is handled by cache polling)
+                    let _ = app
+                        .thumbnail_service
+                        .lock()
+                        .unwrap()
+                        .request_thumbnail_generation(
+                            img_path.clone(),  // Assuming img_path is PathBuf or can be cloned
+                            thumb_dir.clone(), // Assuming thumb_dir is PathBuf or can be cloned
+                            target_display_size,
+                        );
+
+                    // Attempt to get from cache
+                    if let Some((texture_handle, (img_w, img_h))) = app
+                        .thumbnail_service
+                        .lock()
+                        .unwrap()
+                        .get_cached_texture_info(&thumb_path_key_str)
                     {
-                        let img_w_f32 = *img_w as f32;
-                        let img_h_f32 = *img_h as f32;
+                        let img_w_f32 = img_w as f32;
+                        let img_h_f32 = img_h as f32;
                         let aspect_ratio = if img_h_f32 > 0.001 {
                             img_w_f32 / img_h_f32
                         } else {
