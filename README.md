@@ -1,6 +1,6 @@
 # Nadex
 
-A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, molotov) lineups for video games. Built with Rust and the egui library.
+A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, molotov) lineups for Counter-Strike. Built with Rust and the egui library.
 
 ## Features
 
@@ -21,7 +21,7 @@ A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, m
 
 1.  **Clone the repository (if you haven't already):**
     ```bash
-    git clone <your-repository-url>
+    git clone https://github.com/cj-tomlin/nadex.git
     cd nadex
     ```
 
