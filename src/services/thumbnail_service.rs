@@ -105,7 +105,7 @@ impl StdError for ThumbnailServiceError {
 }
 // --- End ThumbnailServiceError ---
 
-pub const ALLOWED_THUMB_SIZES: [u32; 3] = [960, 720, 480];
+pub const ALLOWED_THUMB_SIZES: [u32; 3] = [957, 637, 477];
 const MAX_THUMB_CACHE_SIZE: usize = 18; // Example value
 
 // --- Structs for Asynchronous Thumbnail Loading (if used by cache/UI directly) ---

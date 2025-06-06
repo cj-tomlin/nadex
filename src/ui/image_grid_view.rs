@@ -25,8 +25,8 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
 
     // Determine number of columns to fit the window
     let grid_rect = ui.max_rect();
-    let spacing = 12.0_f32;
-    let min_padding = 8.0_f32;
+    let spacing = 2.0_f32;
+    let min_padding = 0.0_f32;
     let display_width_config = app.grid_image_size;
     let num_columns = ((grid_rect.width() + spacing)
         / (display_width_config + spacing + 2.0_f32 * min_padding))
