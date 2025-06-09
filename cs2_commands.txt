@@ -1,0 +1,11 @@
+// Crosshair Code
+CSGO-SM3kP-Vmtsi-fFtU4-6MGLJ-KuwTC
+
+// Settings
+Disable Grenade Lineup Crosshair (Optional)
+
+// CS2 Console
+cl_draw_only_deathnotices 0
+
+// Refrag NADR
+.mapgrenades
