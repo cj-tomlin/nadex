@@ -1,5 +1,7 @@
 # Nadex
 
+![Nadex Preview](./preview.png)
+
 A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, molotov) lineups for Counter-Strike. Built with Rust and the egui library.
 
 ## Features
