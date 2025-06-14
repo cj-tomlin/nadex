@@ -123,24 +123,45 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                         let display_width = app.grid_image_size;
                         let display_height = display_width / aspect_ratio;
 
-                        let image_widget = egui::Image::new(egui::load::SizedTexture::new(
+                        // --- Image Rendering with In-Place Zoom-on-Hover ---
+
+                        // 1. Allocate space and sense interaction (hover, click)
+                        let (rect, image_response) = ui.allocate_exact_size(
+                            Vec2::new(display_width, display_height),
+                            egui::Sense::click(),
+                        );
+
+                        // 2. Determine the UV coordinates for the texture based on hover state
+                        let uv_rect = if image_response.hovered() {
+                            // Zoom in: show the middle 50% of the image (2x zoom)
+                            let zoom_factor = 2.0;
+                            let new_uv_size = 1.0 / zoom_factor;
+                            let uv_min = (1.0 - new_uv_size) / 2.0;
+                            let uv_max = uv_min + new_uv_size;
+                            egui::Rect::from_min_max(
+                                egui::pos2(uv_min, uv_min),
+                                egui::pos2(uv_max, uv_max),
+                            )
+                        } else {
+                            // Normal view: show the full image
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                        };
+
+                        // 3. Paint the image (or the zoomed portion) in the allocated rectangle
+                        ui.painter().image(
                             texture_handle.id(),
-                            // Use actual image dimensions for SizedTexture for correct internal scaling by egui::Image
-                            Vec2::new(img_w_f32, img_h_f32),
-                        ))
-                        .rounding(Rounding::same(4.0))
-                        .sense(egui::Sense::click());
+                            rect,
+                            uv_rect,
+                            egui::Color32::WHITE,
+                        );
 
-                        // ui.add_sized will scale the SizedTexture to fit [display_width, display_height] while maintaining aspect ratio.
-                        let image_response =
-                            ui.add_sized([display_width, display_height], image_widget);
-
+                        // 4. Handle click events
                         if image_response.clicked() {
                             action_queue
                                 .push(AppAction::ImageGridImageClicked(current_meta_ref.clone()));
                         }
 
-                        // Persistent overlay for nade info
+                        // 5. Use the allocated rectangle for drawing overlays
                         let image_rect = image_response.rect;
                         let painter = ui.painter_at(image_rect);
                         let bar_height = 24.0_f32;

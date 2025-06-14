@@ -208,19 +208,43 @@ impl eframe::App for NadexApp {
             ctx.request_repaint(); // Request repaint if actions were received
         }
 
-        // Process results from thumbnail loading thread
-        let thumb_results: Vec<_> = self
-            .app_state
-            .thumbnail_result_receiver
-            .try_iter()
-            .collect();
-        if !thumb_results.is_empty() && self
-                .app_state
-                .thumbnail_service
-                .lock()
-                .unwrap()
-                .process_loaded_thumbnails(ctx, thumb_results) {
-            ctx.request_repaint(); // Request repaint if new thumbnails were loaded
+        // Process results from thumbnail loading thread incrementally
+        let mut new_thumbnails_loaded_this_frame = false;
+        const MAX_THUMB_RESULTS_PER_FRAME: usize = 5; // Process up to 5 thumbnails per frame
+
+        let mut results_batch = Vec::new();
+        for _ in 0..MAX_THUMB_RESULTS_PER_FRAME {
+            match self.app_state.thumbnail_result_receiver.try_recv() {
+                Ok(result) => results_batch.push(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Channel is empty, stop collecting for this frame
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::error!("Thumbnail result channel has disconnected.");
+                    // TODO: Consider if the worker thread needs to be respawned or app needs to handle this state
+                    break;
+                }
+            }
+        }
+
+        if !results_batch.is_empty() {
+            // Lock the service once to process the current batch
+            match self.app_state.thumbnail_service.lock() {
+                Ok(mut service) => {
+                    if service.process_loaded_thumbnails(ctx, results_batch) {
+                        new_thumbnails_loaded_this_frame = true;
+                    }
+                }
+                Err(poisoned_error) => {
+                    log::error!("ThumbnailService mutex is poisoned: {}. Unable to process thumbnails.", poisoned_error);
+                    // Handle poisoned mutex, e.g., by trying to reinitialize or shut down gracefully.
+                }
+            }
+        }
+
+        if new_thumbnails_loaded_this_frame {
+            ctx.request_repaint(); // Request repaint if new thumbnails were loaded this frame
         }
 
         let actions_to_process = self.action_queue.drain(..).collect::<Vec<_>>();
