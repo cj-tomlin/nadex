@@ -237,7 +237,10 @@ impl eframe::App for NadexApp {
                     }
                 }
                 Err(poisoned_error) => {
-                    log::error!("ThumbnailService mutex is poisoned: {}. Unable to process thumbnails.", poisoned_error);
+                    log::error!(
+                        "ThumbnailService mutex is poisoned: {}. Unable to process thumbnails.",
+                        poisoned_error
+                    );
                     // Handle poisoned mutex, e.g., by trying to reinitialize or shut down gracefully.
                 }
             }

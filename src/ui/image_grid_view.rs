@@ -176,7 +176,7 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                             image_rect.x_range(),
                             egui::Rangef::new(top_bar_y_start, top_bar_y_start + bar_height),
                         );
-                        painter.rect_filled(top_bar_rect, Rounding::same(4.0), bar_color);
+                                                painter.rect_filled(top_bar_rect, Rounding::ZERO, bar_color);
 
                         let icon_center_y = top_bar_rect.min.y + bar_height / 2.0_f32;
                         let icon_center_x = top_bar_rect.min.x + text_padding + icon_radius;
@@ -233,7 +233,7 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                             image_rect.x_range(),
                             egui::Rangef::new(bottom_bar_y_start, image_rect.max.y),
                         );
-                        painter.rect_filled(bottom_bar_rect, Rounding::same(4.0), bar_color);
+                                                painter.rect_filled(bottom_bar_rect, Rounding::ZERO, bar_color);
                         painter.text(
                             bottom_bar_rect.center(),
                             egui::Align2::CENTER_CENTER,
