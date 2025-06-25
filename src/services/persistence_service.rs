@@ -155,18 +155,61 @@ impl PersistenceService {
 
         // After successfully copying the main image, convert it to full-size WebP.
         let thumb_storage_dir = map_dir.join(".thumbnails");
-        let thumbnail_service_locked = thumbnail_service.lock().unwrap();
+
+        // Ensure the thumbnails directory exists
+        if !thumb_storage_dir.exists() {
+            match fs::create_dir_all(&thumb_storage_dir) {
+                Ok(_) => log::info!(
+                    "Created thumbnails directory: {}",
+                    thumb_storage_dir.display()
+                ),
+                Err(e) => {
+                    log::error!(
+                        "Failed to create thumbnails directory {}: {}",
+                        thumb_storage_dir.display(),
+                        e
+                    );
+                    return Err(PersistenceServiceError::IoError(e));
+                }
+            }
+        }
+
+        // Acquire lock on thumbnail service with better error handling
+        let thumbnail_service_locked = match thumbnail_service.lock() {
+            Ok(service) => service,
+            Err(e) => {
+                log::error!("Failed to acquire lock on thumbnail service: {}", e);
+                // Clean up the copied image since we can't proceed
+                if let Err(remove_err) = fs::remove_file(&dest_path) {
+                    log::error!(
+                        "Additionally, failed to cleanup main image file {} after lock error: {}",
+                        dest_path.display(),
+                        remove_err
+                    );
+                }
+                return Err(PersistenceServiceError::InvalidInput(format!(
+                    "Internal error: Failed to access thumbnail service: {}",
+                    e
+                )));
+            }
+        };
 
         // Generate a single full-size WebP version of the image instead of multiple thumbnails
         match thumbnail_service_locked.convert_to_full_webp(&dest_path, &thumb_storage_dir) {
-            Ok(_) => { /* WebP image generated successfully */ }
+            Ok(webp_path) => {
+                log::info!(
+                    "WebP image successfully generated at: {}",
+                    webp_path.display()
+                );
+            }
             Err(e) => {
-                eprintln!("Failed to convert image to WebP: {:?}", e);
+                log::error!("Failed to convert image to WebP: {:?}", e);
                 // Attempt to clean up the copied main image file
                 if let Err(remove_err) = fs::remove_file(&dest_path) {
-                    eprintln!(
-                        "Additionally, failed to cleanup main image file {:?} after WebP conversion error: {}",
-                        dest_path, remove_err
+                    log::error!(
+                        "Additionally, failed to cleanup main image file {} after WebP conversion error: {}",
+                        dest_path.display(),
+                        remove_err
                     );
                 }
                 // Propagate the WebP conversion error, wrapped in PersistenceServiceError

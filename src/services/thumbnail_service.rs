@@ -679,9 +679,23 @@ fn _static_convert_to_full_webp(
     // Construct the output path with .webp extension
     let output_path = output_dir.join(format!("{}.webp", file_stem));
 
-    // Save the image as WebP at full resolution
-    img.save_with_format(&output_path, image::ImageFormat::WebP)
+    // Save the image as WebP at full resolution with optimized quality
+    // The image crate uses reasonable default quality settings for WebP
+    // We explicitly convert to RGBA8 for consistent results
+    let rgba_img = img.to_rgba8();
+
+    // Save with WebP format for good balance of quality and file size
+    rgba_img
+        .save_with_format(&output_path, image::ImageFormat::WebP)
         .map_err(|e| ThumbnailServiceError::ImageSave(output_path.clone(), (&e).into()))?;
+
+    // Note: The image crate uses default WebP encoding parameters which are good for most cases
+    // If more control is needed, we could use a crate like webp or libwebp-sys directly
+
+    log::info!(
+        "Optimized WebP conversion complete: {}",
+        output_path.display()
+    );
 
     Ok(output_path)
 }
@@ -1117,5 +1131,123 @@ mod tests {
             expected_filename,
             "Full-size WebP filename should have no size suffix"
         );
+    }
+
+    #[test]
+    fn test_convert_to_full_webp_corrupt_image() {
+        let env = setup_thumbnail_test_env();
+        let service = new_test_thumbnail_service();
+
+        // Create a corrupt image file (just text data, not valid image format)
+        let corrupt_image_path = env.source_dir.join("corrupt_image.png");
+        fs::write(&corrupt_image_path, "This is not valid image data")
+            .expect("Failed to create corrupt test file");
+
+        // Try to convert the corrupt image
+        let result = service.convert_to_full_webp(&corrupt_image_path, &env.output_dir);
+
+        // Should fail with ImageOpen error
+        assert!(
+            result.is_err(),
+            "Expected error when converting corrupt image"
+        );
+        match result.err().unwrap() {
+            ThumbnailServiceError::ImageOpen(path, _) => {
+                assert_eq!(
+                    path, corrupt_image_path,
+                    "Error path should match corrupt image path"
+                );
+            }
+            other_error => panic!("Expected ImageOpen error, got {:?}", other_error),
+        }
+    }
+
+    #[test]
+    fn test_convert_to_full_webp_edge_case_tiny_image() {
+        let env = setup_thumbnail_test_env();
+        let service = new_test_thumbnail_service();
+
+        // Create a very small 1x1 pixel image
+        let tiny_image_path = create_dummy_image_file(
+            &env.source_dir,
+            "tiny_image.png",
+            1, // Width: 1 pixel
+            1, // Height: 1 pixel
+        );
+
+        // Convert the tiny image
+        let result = service.convert_to_full_webp(&tiny_image_path, &env.output_dir);
+
+        // Should succeed despite tiny dimensions
+        assert!(
+            result.is_ok(),
+            "Failed to convert tiny 1x1 image: {:?}",
+            result.err()
+        );
+
+        let webp_path = result.unwrap();
+        assert!(
+            webp_path.exists(),
+            "WebP output for tiny image doesn't exist"
+        );
+
+        // Verify dimensions were preserved
+        if let Ok(img) = image::open(&webp_path) {
+            let (width, height) = img.dimensions();
+            assert_eq!(width, 1, "Tiny WebP should maintain 1px width");
+            assert_eq!(height, 1, "Tiny WebP should maintain 1px height");
+        } else {
+            panic!("Failed to open generated WebP for tiny image");
+        }
+    }
+
+    #[test]
+    fn test_convert_to_full_webp_large_image() {
+        let env = setup_thumbnail_test_env();
+        let service = new_test_thumbnail_service();
+
+        // Create a very large image (8K resolution)
+        let large_width = 7680;
+        let large_height = 4320;
+        let large_image_path = create_dummy_image_file(
+            &env.source_dir,
+            "large_image.png",
+            large_width,
+            large_height,
+        );
+
+        // Convert the large image
+        let result = service.convert_to_full_webp(&large_image_path, &env.output_dir);
+
+        // Should successfully handle large images
+        assert!(
+            result.is_ok(),
+            "Failed to convert large image: {:?}",
+            result.err()
+        );
+
+        let webp_path = result.unwrap();
+        assert!(
+            webp_path.exists(),
+            "WebP output for large image doesn't exist"
+        );
+
+        // Verify image dimensions were preserved
+        if let Ok(img) = image::open(&webp_path) {
+            let (width, height) = img.dimensions();
+            // Large images might be resized in the process, but should maintain aspect ratio
+            if width != large_width {
+                let expected_height = (height as f32 * (large_width as f32 / width as f32)) as u32;
+                assert!(
+                    (height as i32 - expected_height as i32).abs() <= 1,
+                    "Aspect ratio not maintained for large image conversion"
+                );
+            } else {
+                assert_eq!(width, large_width, "Large WebP should maintain width");
+                assert_eq!(height, large_height, "Large WebP should maintain height");
+            }
+        } else {
+            panic!("Failed to open generated WebP for large image");
+        }
     }
 }

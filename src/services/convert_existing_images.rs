@@ -1,4 +1,6 @@
-use crate::services::thumbnail_service::{ConcreteThumbnailService, ThumbnailServiceTrait};
+use crate::services::thumbnail_service::{
+    ConcreteThumbnailService, ThumbnailServiceError, ThumbnailServiceTrait,
+};
 use log::info;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -44,12 +46,47 @@ pub fn convert_all_images_to_full_webp(
                 info!("WebP version doesn't exist, converting: {:?}", image_path);
                 if let Ok(service) = thumbnail_service.lock() {
                     match service.convert_to_full_webp(&image_path, &thumbnails_dir) {
-                        Ok(_) => {
+                        Ok(webp_path) => {
                             converted_count += 1;
-                            info!("Successfully converted to WebP: {:?}", image_path);
+                            info!(
+                                "Successfully converted to WebP: {:?} → {}",
+                                image_path,
+                                webp_path.display()
+                            );
                         }
                         Err(e) => {
-                            info!("Failed to convert to WebP: {:?} - Error: {}", image_path, e);
+                            // Log details based on error type for better diagnostics
+                            match &e {
+                                ThumbnailServiceError::ImageOpen(path, err) => {
+                                    info!(
+                                        "Failed to open image for WebP conversion: {} - Error: {}",
+                                        path.display(),
+                                        err
+                                    );
+                                }
+                                ThumbnailServiceError::DirectoryCreation(path, err) => {
+                                    info!(
+                                        "Failed to create directory for WebP conversion: {} - Error: {}",
+                                        path.display(),
+                                        err
+                                    );
+                                }
+                                ThumbnailServiceError::ImageSave(path, err) => {
+                                    info!(
+                                        "Failed to save WebP image: {} - Error: {}",
+                                        path.display(),
+                                        err
+                                    );
+                                }
+                                _ => {
+                                    info!(
+                                        "Failed to convert to WebP: {:?} - Error: {}",
+                                        image_path, e
+                                    );
+                                }
+                            }
+
+                            // Continue with other images despite this failure
                         }
                     }
                 } else {
