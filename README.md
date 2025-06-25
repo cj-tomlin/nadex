@@ -34,6 +34,8 @@ A desktop application for managing and viewing "nade" (e.g., smoke, flashbang, m
 
     The application will compile and then launch. Image data and the manifest will be stored in your system's local application data directory under a `nadex` subfolder (e.g., `C:\Users\<YourUser>\AppData\Local\nadex` on Windows).
 
+For more detailed technical documentation on the architecture and workflows, see [DOCUMENTATION.md](./docs/DOCUMENTATION.md).
+
 ## Project Structure (Simplified)
 
 *   `src/main.rs`: Main application entry point, event loop (`NadexApp::update`), and top-level UI orchestration.

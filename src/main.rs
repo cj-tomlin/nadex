@@ -26,12 +26,23 @@ fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .filter_module("nadex", LevelFilter::Debug) // Ensure nadex debug logs are shown
         .init();
+
+    log::info!("Starting Nadex application");
+
     let mut options = NativeOptions::default();
     options.viewport.maximized = Some(true);
+
+    log::info!("Initializing eframe");
+
     eframe::run_native(
         "nadex",
         options,
-        Box::new(|_cc| Ok(Box::new(NadexApp::default()) as Box<dyn eframe::App>)),
+        Box::new(|_cc| {
+            log::info!("Creating NadexApp instance");
+            let app = NadexApp::default();
+            log::info!("NadexApp instance created successfully");
+            Ok(Box::new(app) as Box<dyn eframe::App>)
+        }),
     )
 }
 
@@ -51,6 +62,18 @@ impl Default for NadexApp {
             action_queue: Vec::new(),
             upload_modal: UploadModal::new(), // Initialize UploadModal
         };
+
+        // Convert all existing images to full-size WebP format
+        log::info!("Converting existing images to full-size WebP on startup...");
+        match crate::services::convert_existing_images::convert_all_images_to_full_webp(
+            &app.app_state.data_dir,
+            &app.app_state.image_manifest,
+            &app.app_state.thumbnail_service,
+        ) {
+            Ok(count) => log::info!("Converted {} existing images to WebP format", count),
+            Err(e) => log::error!("Failed to convert existing images: {}", e),
+        }
+
         // filter_images_for_current_map needs to be called after AppState is initialized
         // and it will now operate on app.app_state fields.
         app.filter_images_for_current_map();
@@ -64,12 +87,28 @@ impl NadexApp {
     }
 
     fn load_detail_image(&mut self, ctx: &egui::Context, image_meta: &ImageMeta) {
-        let full_image_path = self
-            .app_state
-            .data_dir
-            .join(&self.app_state.current_map)
-            .join(&image_meta.filename);
-        match image::open(&full_image_path) {
+        // First try to load from the full-size WebP in the thumbnails directory
+        let map_dir = self.app_state.data_dir.join(&self.app_state.current_map);
+        let original_image_path = map_dir.join(&image_meta.filename);
+
+        // Use module_construct_thumbnail_path with size=0 for full-size WebP images
+        use crate::services::thumbnail_service::module_construct_thumbnail_path;
+        let thumb_dir = map_dir.join(".thumbnails");
+        let webp_path = module_construct_thumbnail_path(&original_image_path, &thumb_dir, 0);
+        if !webp_path.exists() {
+            if let Ok(thumbnail_service) = self.app_state.thumbnail_service.lock() {
+                let _ = thumbnail_service
+                    .convert_to_full_webp(&original_image_path, &map_dir.join(".thumbnails"));
+            }
+        }
+
+        // Try the WebP version first, fall back to original if necessary
+        let image_path_to_load = if webp_path.exists() {
+            webp_path
+        } else {
+            original_image_path
+        };
+        match image::open(&image_path_to_load) {
             Ok(img) => {
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                     [img.width() as usize, img.height() as usize],
@@ -329,11 +368,9 @@ impl eframe::App for NadexApp {
                             .or_default()
                             .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
 
-                        // Request thumbnail generation for the new image
-                        // We use new_image_meta.map and new_image_meta.filename which are available after the clone.
+                        // Request full-size WebP conversion for the new image
                         let image_map_name_for_thumb = new_image_meta.map.clone();
                         let image_filename_for_thumb = new_image_meta.filename.clone();
-                        let target_thumb_size = self.app_state.grid_image_size as u32;
 
                         let image_full_path_for_thumb = self
                             .app_state
@@ -347,21 +384,19 @@ impl eframe::App for NadexApp {
                             .join(".thumbnails");
 
                         log::info!(
-                            "Requesting thumbnail for image path: {:?}, target size: {}, thumbnail directory: {:?}",
+                            "Requesting full-size WebP conversion for image path: {:?}, thumbnail directory: {:?}",
                             image_full_path_for_thumb,
-                            target_thumb_size,
                             thumbnails_storage_dir
                         );
 
                         match self.app_state.thumbnail_service.lock() {
-                            Ok(mut thumbnail_service_guard) => {
-                                if let Err(e) = thumbnail_service_guard
-                                    .request_thumbnail_generation(
-                                        image_full_path_for_thumb,
-                                        thumbnails_storage_dir,
-                                        target_thumb_size,
-                                    )
-                                {
+                            Ok(thumbnail_service_guard) => {
+                                // Use convert_to_full_webp instead of request_thumbnail_generation
+                                // This creates the full-size WebP without any size suffix
+                                if let Err(e) = thumbnail_service_guard.convert_to_full_webp(
+                                    &image_full_path_for_thumb,
+                                    &thumbnails_storage_dir,
+                                ) {
                                     log::error!(
                                         "Failed to request thumbnail generation for '{}' in map '{}': {}",
                                         image_filename_for_thumb,

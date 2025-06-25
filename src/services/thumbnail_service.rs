@@ -69,6 +69,7 @@ pub enum ThumbnailServiceError {
     ImageOpen(PathBuf, SerializableImageError),
     ImageSave(PathBuf, SerializableImageError),
     FileRemoval(PathBuf, SerializableIoError), // For file removal errors
+    Other(String),                             // For general errors
 }
 
 impl fmt::Display for ThumbnailServiceError {
@@ -89,6 +90,9 @@ impl fmt::Display for ThumbnailServiceError {
             ThumbnailServiceError::FileRemoval(path, err) => {
                 write!(f, "File removal failed for '{}': {}", path.display(), err)
             }
+            ThumbnailServiceError::Other(msg) => {
+                write!(f, "Thumbnail service error: {}", msg)
+            }
         }
     }
 }
@@ -100,12 +104,13 @@ impl StdError for ThumbnailServiceError {
             ThumbnailServiceError::ImageOpen(_, err) => Some(err),
             ThumbnailServiceError::ImageSave(_, err) => Some(err),
             ThumbnailServiceError::FileRemoval(_, err) => Some(err),
+            ThumbnailServiceError::Other(_) => None, // No underlying source error
         }
     }
 }
 // --- End ThumbnailServiceError ---
 
-pub const ALLOWED_THUMB_SIZES: [u32; 3] = [957, 637, 477];
+// Full-size WebP images are now used instead of multiple thumbnails at different sizes
 const MAX_THUMB_CACHE_SIZE: usize = 24; // Example value
 
 // --- Structs for Asynchronous Thumbnail Loading (if used by cache/UI directly) ---
@@ -126,9 +131,19 @@ pub struct ThumbnailLoadResult {
 // --- End Async Structs ---
 
 /// Constructs the canonical path for a thumbnail file.
+///
+/// When `size` is 0, it creates a path for a full-size WebP image without a size suffix.
+/// Otherwise, it creates a path with the traditional size suffix for backward compatibility.
 pub fn module_construct_thumbnail_path(img_path: &Path, thumb_dir: &Path, size: u32) -> PathBuf {
     let stem = img_path.file_stem().unwrap_or_default().to_string_lossy();
-    thumb_dir.join(format!("{}_{}.webp", stem, size))
+
+    // For full-size WebP (size=0), don't add a size suffix
+    if size == 0 {
+        thumb_dir.join(format!("{}.webp", stem))
+    } else {
+        // For backward compatibility, keep the size suffix for old thumbnails
+        thumb_dir.join(format!("{}_{}.webp", stem, size))
+    }
 }
 
 // --- ThumbnailCache struct and impl ---
@@ -185,16 +200,15 @@ impl ThumbnailCache {
         let original_image_path_in_data = map_data_dir.join(image_filename);
         let thumb_storage_dir = map_data_dir.join(".thumbnails");
 
-        for &size in ALLOWED_THUMB_SIZES.iter() {
-            let expected_thumb_path = module_construct_thumbnail_path(
-                &original_image_path_in_data,
-                &thumb_storage_dir,
-                size,
-            );
-            let key = expected_thumb_path.to_string_lossy().into_owned();
-            self.textures.remove(&key);
-            self.loading_in_progress.remove(&key);
-        }
+        // Handle only the full-size WebP (size=0)
+        let full_webp_path = module_construct_thumbnail_path(
+            &original_image_path_in_data,
+            &thumb_storage_dir,
+            0, // Size 0 indicates full-size WebP
+        );
+        let key = full_webp_path.to_string_lossy().into_owned();
+        self.textures.remove(&key);
+        self.loading_in_progress.remove(&key);
         self.order.retain(|k| self.textures.contains_key(k));
     }
 
@@ -213,13 +227,14 @@ impl ThumbnailCache {
 
 // --- ThumbnailServiceTrait ---
 pub trait ThumbnailServiceTrait: Send + Sync + fmt::Debug {
-    fn generate_thumbnail_file(
+    /// Convert the source image to a single WebP file at full resolution
+    fn convert_to_full_webp(
         &self,
-        original_image_path: &Path,
-        thumb_storage_dir: &Path,
-        target_width: u32,
+        source_image_path: &Path,
+        thumbnail_storage_dir: &Path,
     ) -> Result<PathBuf, ThumbnailServiceError>;
 
+    /// Remove all thumbnails for a specific image
     fn remove_thumbnails_for_image(
         &mut self,
         image_filename: &str,
@@ -227,16 +242,18 @@ pub trait ThumbnailServiceTrait: Send + Sync + fmt::Debug {
         data_dir: &Path,
     ) -> Result<(), ThumbnailServiceError>;
 
-    // Method to request asynchronous generation of a thumbnail.
-    // It will check caches and ongoing loads before dispatching a new job.
-    fn request_thumbnail_generation(
-        &mut self, // &mut self because it might update loading_in_progress set
-        image_file_path: PathBuf,
-        thumb_storage_dir: PathBuf,
-        target_size: u32,
-    ) -> Result<(), String>;
-
     fn get_cached_texture_info(&self, key: &str) -> Option<(egui::TextureHandle, (u32, u32))>;
+
+    /// Check if a texture exists in the cache
+    fn has_texture(&self, key: &str) -> bool;
+
+    /// Load a texture from file into the cache
+    fn load_texture_from_file(
+        &mut self,
+        file_path: &Path,
+        cache_key: &str,
+        ctx: &egui::Context,
+    ) -> Result<(), ThumbnailServiceError>;
 }
 // --- End ThumbnailServiceTrait ---
 
@@ -397,13 +414,12 @@ impl ConcreteThumbnailService {
 }
 
 impl ThumbnailServiceTrait for ConcreteThumbnailService {
-    fn generate_thumbnail_file(
+    fn convert_to_full_webp(
         &self,
         original_image_path: &Path,
-        thumb_storage_dir: &Path,
-        target_width: u32,
+        output_dir: &Path,
     ) -> Result<PathBuf, ThumbnailServiceError> {
-        _static_do_generate_thumbnail_file(original_image_path, thumb_storage_dir, target_width)
+        _static_convert_to_full_webp(original_image_path, output_dir)
     }
 
     fn remove_thumbnails_for_image(
@@ -418,25 +434,25 @@ impl ThumbnailServiceTrait for ConcreteThumbnailService {
         let mut first_error: Option<ThumbnailServiceError> = None;
 
         if thumb_storage_dir.exists() && thumb_storage_dir.is_dir() {
-            for &size in ALLOWED_THUMB_SIZES.iter() {
-                let expected_thumb_path = module_construct_thumbnail_path(
-                    &original_image_path_in_data,
-                    &thumb_storage_dir,
-                    size,
-                );
-                if expected_thumb_path.exists() {
-                    if let Err(e) = fs::remove_file(&expected_thumb_path) {
-                        log::warn!(
-                            "Failed to remove thumbnail file {:?}: {}. Will attempt to continue.",
-                            expected_thumb_path,
-                            e
-                        );
-                        if first_error.is_none() {
-                            first_error = Some(ThumbnailServiceError::FileRemoval(
-                                expected_thumb_path.clone(),
-                                e.into(),
-                            ));
-                        }
+            // For the full-size WebP (size=0)
+            let full_webp_path = module_construct_thumbnail_path(
+                &original_image_path_in_data,
+                &thumb_storage_dir,
+                0, // Size 0 indicates full-size WebP
+            );
+
+            if full_webp_path.exists() {
+                if let Err(e) = fs::remove_file(&full_webp_path) {
+                    log::warn!(
+                        "Failed to remove full-size WebP file {:?}: {}. Will attempt to continue.",
+                        full_webp_path,
+                        e
+                    );
+                    if first_error.is_none() {
+                        first_error = Some(ThumbnailServiceError::FileRemoval(
+                            full_webp_path.clone(),
+                            e.into(),
+                        ));
                     }
                 }
             }
@@ -457,21 +473,79 @@ impl ThumbnailServiceTrait for ConcreteThumbnailService {
         }
     }
 
-    fn request_thumbnail_generation(
-        &mut self,
-        image_file_path: PathBuf,
-        thumb_storage_dir: PathBuf,
-        target_size: u32,
-    ) -> Result<(), String> {
-        // Call the renamed internal method
-        self._internal_request_thumbnail_generation(image_file_path, thumb_storage_dir, target_size)
-    }
+    // The deprecated request_thumbnail_generation method has been removed as part of the transition to full-size WebP images
 
     fn get_cached_texture_info(&self, key: &str) -> Option<(egui::TextureHandle, (u32, u32))> {
         let mut cache = self.cache.lock().unwrap();
         // Cloned because TextureHandle is Arc-like and dimensions are (u32, u32) which is Copy.
         // The TextureHandle itself is cloneable (it's an Arc internally).
         cache.get_texture_info(key).cloned()
+    }
+
+    fn has_texture(&self, key: &str) -> bool {
+        if let Ok(cache) = self.cache.lock() {
+            cache.textures.contains_key(key)
+        } else {
+            false
+        }
+    }
+
+    fn load_texture_from_file(
+        &mut self,
+        file_path: &Path,
+        cache_key: &str,
+        ctx: &egui::Context,
+    ) -> Result<(), ThumbnailServiceError> {
+        if !file_path.exists() {
+            return Err(ThumbnailServiceError::ImageOpen(
+                file_path.to_path_buf(),
+                SerializableImageError {
+                    message: "File does not exist".to_string(),
+                },
+            ));
+        }
+
+        // Load the image from file
+        log::info!("Loading image from path: {:?}", file_path);
+        let img = image::open(file_path).map_err(|e| {
+            log::error!("Failed to load image: {:?}", e);
+            ThumbnailServiceError::ImageOpen(file_path.to_path_buf(), (&e).into())
+        })?;
+
+        let dimensions = (img.width(), img.height());
+        let rgba_img = img.into_rgba8();
+
+        // Get size and raw bytes from image
+        let size = [rgba_img.width() as usize, rgba_img.height() as usize];
+        let rgba_bytes = rgba_img.as_raw(); // This gives &[u8] which is what from_rgba_unmultiplied expects
+
+        log::info!(
+            "Creating texture with dimensions: {}x{}",
+            dimensions.0,
+            dimensions.1
+        );
+
+        // Create the texture
+        let texture = ctx.load_texture(
+            cache_key,
+            egui::ColorImage::from_rgba_unmultiplied(size, rgba_bytes),
+            egui::TextureOptions::default(),
+        );
+
+        // Store in cache
+        if let Ok(mut cache) = self.cache.lock() {
+            cache
+                .textures
+                .insert(cache_key.to_string(), (texture, dimensions));
+            cache.order.push_back(cache_key.to_string());
+            log::info!("Texture cached successfully with key: {}", cache_key);
+        } else {
+            return Err(ThumbnailServiceError::Other(
+                "Failed to lock cache".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -562,6 +636,56 @@ fn process_job_to_color_image(
     Ok((color_image, (width, height)))
 }
 
+// Private static helper for converting an image to full-size WebP
+fn _static_convert_to_full_webp(
+    original_image_path: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf, ThumbnailServiceError> {
+    if !original_image_path.exists() {
+        return Err(ThumbnailServiceError::ImageOpen(
+            original_image_path.to_path_buf(),
+            SerializableImageError {
+                message: "Original image file does not exist.".to_string(),
+            },
+        ));
+    }
+
+    if output_dir.is_file() {
+        return Err(ThumbnailServiceError::DirectoryCreation(
+            output_dir.to_path_buf(),
+            SerializableIoError {
+                kind: std::io::ErrorKind::AlreadyExists,
+                message: "Intended output directory path exists as a file.".to_string(),
+            },
+        ));
+    }
+
+    if !output_dir.exists() {
+        fs::create_dir_all(output_dir).map_err(|e| {
+            ThumbnailServiceError::DirectoryCreation(output_dir.to_path_buf(), e.into())
+        })?;
+    }
+
+    let img = image::open(original_image_path).map_err(|e| {
+        ThumbnailServiceError::ImageOpen(original_image_path.to_path_buf(), (&e).into())
+    })?;
+
+    // Use the original dimensions - no resizing
+    let file_stem = original_image_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+
+    // Construct the output path with .webp extension
+    let output_path = output_dir.join(format!("{}.webp", file_stem));
+
+    // Save the image as WebP at full resolution
+    img.save_with_format(&output_path, image::ImageFormat::WebP)
+        .map_err(|e| ThumbnailServiceError::ImageSave(output_path.clone(), (&e).into()))?;
+
+    Ok(output_path)
+}
+
 // Private static helper for actual thumbnail generation
 fn _static_do_generate_thumbnail_file(
     original_image_path: &Path,
@@ -648,17 +772,12 @@ mod tests {
         // The setup_thumbnail_test_env creates the output_dir, and the service is responsible for creating subdirs if needed.
 
         let thumbnail_service = new_test_thumbnail_service();
-        let target_width = ALLOWED_THUMB_SIZES[0];
 
-        let result = thumbnail_service.generate_thumbnail_file(
-            &source_image_path,
-            &thumb_storage_dir,
-            target_width,
-        );
+        let result = thumbnail_service.convert_to_full_webp(&source_image_path, &thumb_storage_dir);
 
         assert!(
             result.is_ok(),
-            "generate_thumbnail_file failed: {:?}",
+            "convert_to_full_webp failed: {:?}",
             result.err()
         );
         let thumb_path = result.unwrap();
@@ -669,10 +788,10 @@ mod tests {
             thumb_path
         );
 
+        // For full-size WebP, the expected filename is just the file stem with .webp extension
         let expected_thumb_filename = format!(
-            "{}_{}.webp",
-            source_image_path.file_stem().unwrap().to_str().unwrap(),
-            target_width
+            "{}.webp",
+            source_image_path.file_stem().unwrap().to_str().unwrap()
         );
         assert_eq!(
             thumb_path.file_name().unwrap().to_str().unwrap(),
@@ -681,7 +800,8 @@ mod tests {
 
         match image::open(&thumb_path) {
             Ok(img) => {
-                assert_eq!(img.width(), target_width, "Thumbnail width is incorrect");
+                // Full-size WebP should maintain the original image width (or be scaled to max width if larger)
+                assert!(img.width() > 0, "Generated WebP has invalid width");
             }
             Err(e) => panic!("Failed to open generated thumbnail {:?}: {}", thumb_path, e),
         }
@@ -692,14 +812,10 @@ mod tests {
         let env = setup_thumbnail_test_env(); // Use shared setup
         let invalid_source_path = env.source_dir.join("non_existent_image.png"); // Use env.source_dir
         let thumb_storage_dir = env.output_dir.clone(); // Use env.output_dir
-        let target_width = ALLOWED_THUMB_SIZES[0];
 
         let thumbnail_service = new_test_thumbnail_service();
-        let result = thumbnail_service.generate_thumbnail_file(
-            &invalid_source_path,
-            &thumb_storage_dir,
-            target_width,
-        );
+        let result =
+            thumbnail_service.convert_to_full_webp(&invalid_source_path, &thumb_storage_dir);
 
         assert!(result.is_err());
         match result.err().unwrap() {
@@ -728,14 +844,10 @@ mod tests {
         assert!(conflicting_path_for_thumb_dir.is_file());
 
         let thumbnail_service = new_test_thumbnail_service();
-        let target_width = ALLOWED_THUMB_SIZES[0];
 
         // Pass the path (which is now a file) as the intended thumbnail storage directory.
-        let result = thumbnail_service.generate_thumbnail_file(
-            &source_image_path,
-            &conflicting_path_for_thumb_dir,
-            target_width,
-        );
+        let result = thumbnail_service
+            .convert_to_full_webp(&source_image_path, &conflicting_path_for_thumb_dir);
 
         assert!(result.is_err());
         match result.err().unwrap() {
@@ -772,11 +884,10 @@ mod tests {
         // The setup_thumbnail_test_env creates this directory.
         let thumb_storage_dir = env.output_dir.clone();
 
-        let target_width = ALLOWED_THUMB_SIZES[0];
+        // For full-size WebP, the naming format is just the file stem with .webp extension
         let expected_thumb_filename = format!(
-            "{}_{}.webp",
-            source_image_path.file_stem().unwrap().to_str().unwrap(),
-            target_width
+            "{}.webp",
+            source_image_path.file_stem().unwrap().to_str().unwrap()
         );
         let conflicting_thumb_path_as_dir = thumb_storage_dir.join(expected_thumb_filename);
 
@@ -789,11 +900,7 @@ mod tests {
 
         let thumbnail_service = new_test_thumbnail_service();
 
-        let result = thumbnail_service.generate_thumbnail_file(
-            &source_image_path,
-            &thumb_storage_dir,
-            target_width,
-        );
+        let result = thumbnail_service.convert_to_full_webp(&source_image_path, &thumb_storage_dir);
 
         assert!(
             result.is_err(),
@@ -833,18 +940,14 @@ mod tests {
         fs::create_dir_all(&thumb_storage_dir)
             .expect("Test setup: failed to create thumb_storage_dir");
 
-        let image_stem = Path::new(image_filename)
-            .file_stem()
-            .unwrap()
-            .to_str()
-            .unwrap();
-        let mut expected_paths = Vec::new();
-        for &size in ALLOWED_THUMB_SIZES.iter() {
-            let thumb_path = thumb_storage_dir.join(format!("{}_{}.webp", image_stem, size));
-            File::create(&thumb_path).expect("Test setup: failed to create dummy thumb file");
-            assert!(thumb_path.exists());
-            expected_paths.push(thumb_path);
-        }
+        let source_image_path = env.source_dir.join(image_filename);
+        let image_stem = source_image_path.file_stem().unwrap().to_str().unwrap();
+
+        // Create a single full-size WebP file instead of multiple sized thumbnails
+        let webp_path = thumb_storage_dir.join(format!("{}.webp", image_stem));
+        File::create(&webp_path).expect("Test setup: failed to create dummy WebP file");
+        assert!(webp_path.exists());
+        let expected_paths = vec![webp_path];
 
         let mut thumbnail_service = new_test_thumbnail_service();
         let result = thumbnail_service.remove_thumbnails_for_image(
@@ -882,36 +985,26 @@ mod tests {
         fs::create_dir_all(&actual_thumb_storage_dir)
             .expect("Test setup: failed to create actual_thumb_storage_dir");
 
-        // Thumbnails are now created inside the actual_thumb_storage_dir
-        let thumb_path1 = actual_thumb_storage_dir
-            .join(format!("{}_{}.webp", image_stem, ALLOWED_THUMB_SIZES[0]));
-        let thumb_path_to_lock = actual_thumb_storage_dir
-            .join(format!("{}_{}.webp", image_stem, ALLOWED_THUMB_SIZES[1]));
-        let thumb_path3 = actual_thumb_storage_dir
-            .join(format!("{}_{}.webp", image_stem, ALLOWED_THUMB_SIZES[2]));
+        // With the new approach, we have a single full-size WebP file
+        let webp_path = actual_thumb_storage_dir.join(format!("{}.webp", image_stem));
 
-        File::create(&thumb_path1).expect("Test setup: failed to create dummy thumb 1");
-        File::create(&thumb_path_to_lock)
-            .expect("Test setup: failed to create dummy thumb to lock");
-        File::create(&thumb_path3).expect("Test setup: failed to create dummy thumb 3");
+        File::create(&webp_path).expect("Test setup: failed to create dummy WebP file");
 
-        assert!(thumb_path1.exists());
-        assert!(thumb_path_to_lock.exists());
-        assert!(thumb_path3.exists());
+        assert!(webp_path.exists());
 
         // Lock the file by opening it with exclusive access (share_mode(0))
         #[cfg(windows)]
         let _locked_file_handle = OpenOptions::new()
             .read(true)
             .share_mode(0) // Exclusive lock on Windows
-            .open(&thumb_path_to_lock)
-            .expect("Test setup: failed to open (lock) the thumbnail file with exclusive access");
+            .open(&webp_path)
+            .expect("Test setup: failed to open (lock) the WebP file with exclusive access");
 
         // For non-Windows, fall back to a simple open, hoping it provides some lock,
         // or acknowledge this test might be less effective.
         #[cfg(not(windows))]
-        let _locked_file_handle = File::open(&thumb_path_to_lock)
-            .expect("Test setup: failed to open (lock) the thumbnail file");
+        let _locked_file_handle =
+            File::open(&webp_path).expect("Test setup: failed to open (lock) the WebP file");
 
         let mut thumbnail_service = new_test_thumbnail_service(); // Made mut
         let result = thumbnail_service.remove_thumbnails_for_image(
@@ -931,7 +1024,7 @@ mod tests {
         match result.err().unwrap() {
             ThumbnailServiceError::FileRemoval(returned_path, io_error_details) => {
                 assert_eq!(
-                    returned_path, thumb_path_to_lock,
+                    returned_path, webp_path,
                     "The path in FileRemoval error should match the locked thumbnail path"
                 );
                 eprintln!(
@@ -957,22 +1050,13 @@ mod tests {
                 );
             }
         }
-        assert!(
-            !thumb_path1.exists(),
-            "Unlocked thumbnail 1 should have been deleted"
-        );
-        assert!(
-            thumb_path_to_lock.exists(),
-            "Locked thumbnail should still exist"
-        ); // It wasn't deleted
-        assert!(
-            !thumb_path3.exists(),
-            "Unlocked thumbnail 3 should have been deleted"
-        );
+
+        // With the new single full-size WebP approach, we only have one file to check
+        assert!(webp_path.exists(), "Locked WebP file should still exist");
     }
 
     #[test]
-    fn test_concrete_service_generate_thumbnail_file_success() {
+    fn test_concrete_service_convert_to_full_webp_success() {
         let env = setup_thumbnail_test_env();
         let service = new_test_thumbnail_service(); // Get an instance of ConcreteThumbnailService
 
@@ -985,53 +1069,53 @@ mod tests {
             original_image_height,
         );
 
-        for target_width in ALLOWED_THUMB_SIZES.iter() {
-            let result =
-                service.generate_thumbnail_file(&source_image_path, &env.output_dir, *target_width);
+        // Test convert_to_full_webp
+        let result = service.convert_to_full_webp(&source_image_path, &env.output_dir);
 
-            assert!(
-                result.is_ok(),
-                "generate_thumbnail_file failed for size {}: {:?}",
-                target_width,
-                result.err()
-            );
+        assert!(
+            result.is_ok(),
+            "convert_to_full_webp failed: {:?}",
+            result.err()
+        );
 
-            let thumb_path = result.unwrap();
-            assert!(
-                thumb_path.exists(),
-                "Thumbnail file does not exist at {:?} for size {}",
-                thumb_path,
-                target_width
-            );
+        let webp_path = result.unwrap();
+        assert!(
+            webp_path.exists(),
+            "WebP file does not exist at {:?}",
+            webp_path
+        );
 
-            // Verify dimensions
-            let img = image::open(&thumb_path).expect("Failed to open generated thumbnail");
-            let (thumb_w, thumb_h) = img.dimensions();
+        // Verify it's a valid image
+        let img = image::open(&webp_path).expect("Failed to open generated WebP file");
+        let (width, height) = img.dimensions();
 
-            assert_eq!(
-                thumb_w, *target_width,
-                "Thumbnail width {} does not match target width {} for file {:?}",
-                thumb_w, *target_width, thumb_path
-            );
+        // Full-size WebP may be capped at a maximum width/height, but shouldn't be larger than original
+        assert!(
+            width <= original_image_width && height <= original_image_height,
+            "WebP dimensions ({},{}) are larger than original ({},{}) for file {:?}",
+            width,
+            height,
+            original_image_width,
+            original_image_height,
+            webp_path
+        );
 
-            let expected_height = (original_image_height as f32
-                * (*target_width as f32 / original_image_width as f32))
-                .round() as u32;
-            assert_eq!(
-                thumb_h, expected_height,
-                "Thumbnail height {} does not match expected height {} for file {:?}",
-                thumb_h, expected_height, thumb_path
-            );
+        // Check file extension is .webp
+        assert_eq!(
+            webp_path.extension().unwrap(),
+            "webp",
+            "File extension should be .webp"
+        );
 
-            assert!(
-                thumb_w <= original_image_width && thumb_h <= original_image_height,
-                "Thumbnail dimensions ({},{}) are not smaller than original ({},{}) for file {:?}",
-                thumb_w,
-                thumb_h,
-                original_image_width,
-                original_image_height,
-                thumb_path
-            );
-        }
+        // Check the filename pattern (no size suffix)
+        let expected_filename = format!(
+            "{}.webp",
+            source_image_path.file_stem().unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            webp_path.file_name().unwrap().to_str().unwrap(),
+            expected_filename,
+            "Full-size WebP filename should have no size suffix"
+        );
     }
 }

@@ -78,65 +78,6 @@ impl Default for MockThumbnailService {
 }
 
 impl ThumbnailServiceTrait for MockThumbnailService {
-    fn generate_thumbnail_file(
-        &self,
-        original_image_path: &Path,
-        thumb_storage_dir: &Path,
-        target_width: u32,
-    ) -> Result<PathBuf, ThumbnailServiceError> {
-        if *self.generate_should_fail.lock().unwrap() {
-            if let Some(err) = self.generation_error_type.lock().unwrap().take() {
-                return Err(err);
-            }
-            // Default error if specific one isn't set
-            return Err(ThumbnailServiceError::ImageSave(
-                PathBuf::from("dummy_path_save_fail.webp"), // Consistent with local mock
-                SerializableImageError::from(&image::ImageError::Encoding(
-                    image::error::EncodingError::new(
-                        image::error::ImageFormatHint::Exact(image::ImageFormat::WebP),
-                        "Mock thumbnail save error from tests_common".to_string(),
-                    ),
-                )),
-            ));
-        }
-
-        let file_stem = original_image_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let thumb_filename = format!("{}_{}.webp", file_stem, target_width); // Consistent with local mock (webp)
-        let thumb_path = thumb_storage_dir.join(thumb_filename);
-
-        if !thumb_storage_dir.exists() {
-            fs::create_dir_all(thumb_storage_dir).map_err(|e| {
-                ThumbnailServiceError::DirectoryCreation(
-                    thumb_storage_dir.to_path_buf(),
-                    SerializableIoError::from(e), // Corrected: from(e) instead of from(&e)
-                )
-            })?;
-        }
-        // Create a dummy file
-        fs::write(&thumb_path, "mock thumb content").map_err(|e| {
-            ThumbnailServiceError::ImageSave(
-                // Corrected: Use ImageSave variant
-                thumb_path.clone(),
-                // For ImageSave, the second param is SerializableImageError, not SerializableIoError.
-                // We need to decide how to represent an IO error during fs::write as a SerializableImageError.
-                // For now, creating a generic SerializableImageError.
-                // This might need further refinement if tests expect specific IO details here.
-                SerializableImageError {
-                    message: format!("Mock fs::write failed: {}", e),
-                },
-            )
-        })?;
-
-        self.created_thumbnail_paths
-            .lock()
-            .unwrap()
-            .push(thumb_path.clone());
-        Ok(thumb_path)
-    }
-
     fn remove_thumbnails_for_image(
         &mut self, // Takes &mut self as per trait
         image_filename: &str,
@@ -209,27 +150,97 @@ impl ThumbnailServiceTrait for MockThumbnailService {
         Ok(())
     }
 
-    fn request_thumbnail_generation(
-        &mut self, // Takes &mut self as per trait
-        _image_file_path: PathBuf,
-        _thumb_storage_dir: PathBuf,
-        _target_size: u32,
-    ) -> Result<(), String> {
-        if *self.generate_should_fail.lock().unwrap() {
-            // Re-using generate_should_fail for simplicity
-            if let Some(err) = self.generation_error_type.lock().unwrap().as_ref() {
-                // If a specific ThumbnailServiceError is set, try to convert its message
-                return Err(format!("Mock async generation error: {}", err));
-            }
-            Err("Mock failed to request thumbnail generation (async)".to_string())
-        } else {
-            Ok(())
-        }
-    }
+    // The deprecated request_thumbnail_generation method has been removed as part of the transition to full-size WebP images
 
     fn get_cached_texture_info(&self, _key: &str) -> Option<(egui::TextureHandle, (u32, u32))> {
         // Mock implementation: by default, returns None.
         None
+    }
+
+    fn has_texture(&self, _key: &str) -> bool {
+        // Mock implementation for tests
+        false
+    }
+
+    fn load_texture_from_file(
+        &mut self,
+        file_path: &Path,
+        _cache_key: &str,
+        _ctx: &egui::Context,
+    ) -> Result<(), ThumbnailServiceError> {
+        // Mock implementation for tests
+        if *self.generate_should_fail.lock().unwrap() {
+            Err(ThumbnailServiceError::ImageOpen(
+                file_path.to_path_buf(),
+                SerializableImageError {
+                    message: "Mock texture loading error".to_string(),
+                },
+            ))
+        } else {
+            // Track the path in created_thumbnail_paths for testing verification
+            self.created_thumbnail_paths
+                .lock()
+                .unwrap()
+                .push(file_path.to_path_buf());
+            Ok(())
+        }
+    }
+
+    fn convert_to_full_webp(
+        &self,
+        original_image_path: &Path,
+        output_dir: &Path,
+    ) -> Result<PathBuf, ThumbnailServiceError> {
+        // Similar logic to generate_thumbnail_file but for full-size WebP conversion
+        if *self.generate_should_fail.lock().unwrap() {
+            if let Some(err) = self.generation_error_type.lock().unwrap().take() {
+                return Err(err);
+            }
+            // Default error if specific one isn't set
+            return Err(ThumbnailServiceError::ImageSave(
+                PathBuf::from("dummy_path_save_fail.webp"),
+                SerializableImageError::from(&image::ImageError::Encoding(
+                    image::error::EncodingError::new(
+                        image::error::ImageFormatHint::Exact(image::ImageFormat::WebP),
+                        "Mock full WebP conversion error from tests_common".to_string(),
+                    ),
+                )),
+            ));
+        }
+
+        let file_stem = original_image_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let webp_filename = format!("{}.webp", file_stem); // No size suffix for full-size WebP
+        let webp_path = output_dir.join(webp_filename);
+
+        // Create output directory if it doesn't exist
+        if !output_dir.exists() {
+            fs::create_dir_all(output_dir).map_err(|e| {
+                ThumbnailServiceError::DirectoryCreation(
+                    output_dir.to_path_buf(),
+                    SerializableIoError::from(e),
+                )
+            })?;
+        }
+
+        // Create a dummy file
+        fs::write(&webp_path, "mock full webp content").map_err(|e| {
+            ThumbnailServiceError::ImageSave(
+                webp_path.clone(),
+                SerializableImageError {
+                    message: format!("Mock fs::write failed for full WebP: {}", e),
+                },
+            )
+        })?;
+
+        self.created_thumbnail_paths
+            .lock()
+            .unwrap()
+            .push(webp_path.clone());
+
+        Ok(webp_path)
     }
 }
 

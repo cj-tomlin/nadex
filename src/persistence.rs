@@ -3,10 +3,8 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use strum_macros::EnumIter;
 
-// Re-export ALLOWED_THUMB_SIZES from the thumbnail_service module
-// so it's available via crate::persistence::ALLOWED_THUMB_SIZES
-#[allow(unused_imports)]
-pub use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
+// We've migrated to a single full-size WebP image approach
+// No need to re-export ALLOWED_THUMB_SIZES anymore
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, EnumIter)]
 pub enum NadeType {

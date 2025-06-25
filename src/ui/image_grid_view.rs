@@ -4,6 +4,7 @@ use egui::{CornerRadius, Sense, Ui, Vec2};
 
 use crate::app_actions::AppAction; // Added import
 use crate::services::thumbnail_service::ThumbnailServiceTrait;
+use log::info;
 
 /// Renders the main image grid.
 #[allow(clippy::too_many_lines)] // This function is inherently long due to UI logic
@@ -82,28 +83,46 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                     let thumb_dir = data_dir_clone
                         .join(&current_meta_ref.map)
                         .join(".thumbnails");
-                    let target_display_size = app.grid_image_size as u32;
+                    let _target_display_size = app.grid_image_size as u32; // No longer used for thumbnail sizing
                     let mut loaded_thumbnail = false;
 
-                    let thumb_path_key_str =
-                        crate::services::thumbnail_service::module_construct_thumbnail_path(
-                            &img_path,
-                            &thumb_dir,
-                            target_display_size,
-                        )
-                        .to_string_lossy()
-                        .into_owned();
+                    // Use module_construct_thumbnail_path with size=0 for full-size WebP images
+                    // This ensures consistent path construction across the application
+                    use crate::services::thumbnail_service::module_construct_thumbnail_path;
 
-                    // Request generation (fire and forget for now, result is handled by cache polling)
-                    let _ = app
-                        .thumbnail_service
-                        .lock()
-                        .unwrap()
-                        .request_thumbnail_generation(
-                            img_path.clone(),  // Assuming img_path is PathBuf or can be cloned
-                            thumb_dir.clone(), // Assuming thumb_dir is PathBuf or can be cloned
-                            target_display_size,
+                    let webp_path = module_construct_thumbnail_path(&img_path, &thumb_dir, 0);
+                    let thumb_path_key_str = webp_path.to_string_lossy().into_owned();
+                    info!("Looking for WebP image at path: {:?}", webp_path);
+
+                    if !webp_path.exists() {
+                        info!("WebP doesn't exist, converting now: {:?}", img_path);
+                        let _ = app
+                            .thumbnail_service
+                            .lock()
+                            .unwrap()
+                            .convert_to_full_webp(&img_path, &thumb_dir);
+                    }
+
+                    // Load the texture into the cache if needed
+                    if webp_path.exists() {
+                        if let Ok(mut service) = app.thumbnail_service.lock() {
+                            if !service.has_texture(&thumb_path_key_str) {
+                                info!("Loading texture from WebP: {:?}", webp_path);
+                                let _ = service.load_texture_from_file(
+                                    &webp_path,
+                                    &thumb_path_key_str,
+                                    ui.ctx(),
+                                );
+                            } else {
+                                info!("Texture already loaded in cache");
+                            }
+                        }
+                    } else {
+                        info!(
+                            "WebP still doesn't exist after conversion attempt: {:?}",
+                            webp_path
                         );
+                    }
 
                     // Attempt to get from cache
                     if let Some((texture_handle, (img_w, img_h))) = app

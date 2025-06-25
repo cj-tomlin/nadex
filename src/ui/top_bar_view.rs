@@ -1,10 +1,10 @@
 use crate::app_actions::AppAction;
 use crate::app_state::AppState;
 use crate::persistence::NadeType;
-use crate::services::thumbnail_service::ALLOWED_THUMB_SIZES;
 use egui::Ui;
 
-const SIZE_LABELS: [&str; 3] = ["Large", "Medium", "Small"]; // Corresponds to 957, 637, 477
+const SIZE_LABELS: [&str; 3] = ["Large", "Medium", "Small"];
+const IMAGE_SIZES: [u32; 3] = [957, 637, 477]; // Direct size values for the grid
 
 /// Renders the top bar UI elements (map selection, filters, upload button, etc.).
 pub fn show_top_bar(
@@ -41,7 +41,7 @@ pub fn show_top_bar(
 
         // Image size icon
         ui_content.label("Image Size:");
-        let current_thumb_idx = ALLOWED_THUMB_SIZES
+        let current_thumb_idx = IMAGE_SIZES
             .iter()
             .position(|&s| s == app_state.grid_image_size as u32)
             .unwrap_or(0);
@@ -52,12 +52,16 @@ pub fn show_top_bar(
                 SIZE_LABELS
                     .get(current_thumb_idx)
                     .cloned()
-                    .unwrap_or("Size") // Fallback selected text
+                    .unwrap_or("Size"), // Fallback selected text
             )
             .show_ui(ui_content, |ui_combo| {
-                for (i, &sz) in ALLOWED_THUMB_SIZES.iter().enumerate() {
+                for (i, &sz) in IMAGE_SIZES.iter().enumerate() {
                     if ui_combo
-                        .selectable_value(&mut temp_selected_idx, i, SIZE_LABELS.get(i).cloned().unwrap_or("Unknown"))
+                        .selectable_value(
+                            &mut temp_selected_idx,
+                            i,
+                            SIZE_LABELS.get(i).cloned().unwrap_or("Unknown"),
+                        )
                         .clicked()
                         && app_state.grid_image_size != sz as f32
                     {

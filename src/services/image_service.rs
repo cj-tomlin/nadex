@@ -2,6 +2,8 @@ use crate::app_actions::AppAction; // For sending actions
 use crate::persistence::{ImageManifest, ImageMeta, NadeType};
 use crate::services::persistence_service::PersistenceService;
 use crate::services::persistence_service::PersistenceServiceError;
+#[cfg(test)]
+use crate::services::thumbnail_service::{SerializableImageError, SerializableIoError};
 use crate::services::thumbnail_service::{ThumbnailServiceError, ThumbnailServiceTrait};
 use crate::ui::edit_view::EditFormData; // Ensure EditFormData is in scope
 use image::{self, GenericImageView}; // For image dimension validation and GenericImageView trait
@@ -380,26 +382,22 @@ impl ImageService {
 //     // pub full_path: PathBuf,
 //     // pub thumbnail_paths: HashMap<u32, PathBuf>,
 // }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::{ImageManifest, ImageMeta, NadeType};
-    use crate::services::thumbnail_service::{
-        ALLOWED_THUMB_SIZES, SerializableImageError, SerializableIoError, ThumbnailServiceError,
-    };
-    use crate::tests_common::{create_dummy_image_file, setup_test_environment}; // Added create_dummy_image_file
-    // image::{ImageBuffer, ImageFormat, Rgba}; // Was for local create_dummy_image_file or error construction, now unused
+    use crate::persistence::NadeType;
+    use crate::services::thumbnail_service::ThumbnailServiceError;
+    #[cfg(test)]
+    use crate::tests_common::{create_dummy_image_file, setup_test_environment};
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::SystemTime;
-    // tempfile::TempDir is removed from here, SystemTime was unused -- this comment is now outdated. create_dummy_image_file is a local helper.
-    use crate::ui::edit_view::EditFormData;
 
     // Test for successful image upload
     #[test]
     fn test_upload_image_success() {
         let env = setup_test_environment();
+        // ... (rest of the code remains the same)
         // image_service, persistence_service, mock_thumbnail_service, data_dir_path, and temp_dir are from env
 
         let map_name = "test_map_upload";
@@ -446,20 +444,19 @@ mod tests {
             expected_thumb_dir
         );
 
-        // Check if at least one thumbnail was created by the mock
-        let thumb_file_path = expected_thumb_dir.join(format!(
-            "{}_{}.webp",
+        // Check if a full-size WebP file was created by the mock
+        let webp_file_path = expected_thumb_dir.join(format!(
+            "{}.webp",
             Path::new(&image_meta.filename)
                 .file_stem()
                 .unwrap()
                 .to_str()
-                .unwrap(),
-            ALLOWED_THUMB_SIZES[0]
+                .unwrap()
         ));
         assert!(
-            thumb_file_path.exists(),
-            "Mock thumbnail file {:?} does not exist. Mock created paths: {:?}",
-            thumb_file_path,
+            webp_file_path.exists(),
+            "Mock full-size WebP file {:?} does not exist. Mock created paths: {:?}",
+            webp_file_path,
             env.mock_thumbnail_service
                 .lock()
                 .unwrap()
@@ -519,13 +516,12 @@ mod tests {
         );
         let thumb_dir_for_delete = env.data_dir_path.join(map_name).join(".thumbnails");
         let expected_thumb_path_before_delete = thumb_dir_for_delete.join(format!(
-            "{}_{}.webp",
+            "{}.webp",
             Path::new(&image_to_delete_meta.filename)
                 .file_stem()
                 .unwrap()
                 .to_str()
-                .unwrap(),
-            ALLOWED_THUMB_SIZES[0]
+                .unwrap()
         ));
         assert!(
             expected_thumb_path_before_delete.exists(),

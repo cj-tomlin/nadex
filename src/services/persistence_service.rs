@@ -10,9 +10,7 @@ use serde_json;
 use std::time::SystemTime; // For deserialization // For timestamp in copy_image_to_data
 // crate::thumbnail is no longer needed for these, but might be for generate_all_thumbnails later
 // For now, let's remove it and add back if necessary. We will need image ops though.
-use crate::services::thumbnail_service::{
-    ALLOWED_THUMB_SIZES, ThumbnailServiceError, ThumbnailServiceTrait,
-}; // Added for thumbnail generation call and error type
+use crate::services::thumbnail_service::{ThumbnailServiceError, ThumbnailServiceTrait}; // Added for thumbnail generation call and error type
 use std::sync::{Arc, Mutex}; // Added for Arc and Mutex
 // image::imageops::FilterType and image::ImageFormat are no longer needed here as thumbnail generation moved
 
@@ -155,28 +153,24 @@ impl PersistenceService {
         let dest_path = map_dir.join(&unique_filename_str);
         fs::copy(src, &dest_path)?;
 
-        // After successfully copying the main image, send jobs to generate thumbnails.
+        // After successfully copying the main image, convert it to full-size WebP.
         let thumb_storage_dir = map_dir.join(".thumbnails");
         let thumbnail_service_locked = thumbnail_service.lock().unwrap();
-        for size in ALLOWED_THUMB_SIZES.iter() {
-            match thumbnail_service_locked.generate_thumbnail_file(
-                &dest_path,
-                &thumb_storage_dir,
-                *size,
-            ) {
-                Ok(_) => { /* Thumbnail generated successfully */ }
-                Err(e) => {
-                    eprintln!("Failed to generate thumbnail (size {}): {:?}", size, e);
-                    // Attempt to clean up the copied main image file
-                    if let Err(remove_err) = fs::remove_file(&dest_path) {
-                        eprintln!(
-                            "Additionally, failed to cleanup main image file {:?} after thumbnail error: {}",
-                            dest_path, remove_err
-                        );
-                    }
-                    // Propagate the thumbnail generation error, wrapped in PersistenceServiceError
-                    return Err(PersistenceServiceError::ThumbnailGenerationFailed(e));
+
+        // Generate a single full-size WebP version of the image instead of multiple thumbnails
+        match thumbnail_service_locked.convert_to_full_webp(&dest_path, &thumb_storage_dir) {
+            Ok(_) => { /* WebP image generated successfully */ }
+            Err(e) => {
+                eprintln!("Failed to convert image to WebP: {:?}", e);
+                // Attempt to clean up the copied main image file
+                if let Err(remove_err) = fs::remove_file(&dest_path) {
+                    eprintln!(
+                        "Additionally, failed to cleanup main image file {:?} after WebP conversion error: {}",
+                        dest_path, remove_err
+                    );
                 }
+                // Propagate the WebP conversion error, wrapped in PersistenceServiceError
+                return Err(PersistenceServiceError::ThumbnailGenerationFailed(e));
             }
         }
 
@@ -296,7 +290,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::NamedTempFile; // NamedTempFile for dummy files
 
-    use crate::persistence::{ALLOWED_THUMB_SIZES, ImageManifest, ImageMeta, MapMeta, NadeType};
+    use crate::persistence::{ImageManifest, ImageMeta, MapMeta, NadeType};
     use crate::services::thumbnail_service::{
         SerializableImageError, SerializableIoError, ThumbnailServiceError, ThumbnailServiceTrait,
     };
@@ -729,21 +723,23 @@ mod tests {
             "Copied image should be deleted"
         );
         let data_map_path = env.data_dir_path.join(map_name);
-        let thumbnail_dir = data_map_path.join("thumbnails");
-        let expected_thumb_path = thumbnail_dir.join(format!(
-            "{}_{}.webp",
+        let thumb_dir = data_map_path.join(".thumbnails");
+
+        // For full-size WebP, the naming format is just the file stem with .webp extension
+        let expected_thumb_path = thumb_dir.join(format!(
+            "{}.webp",
             Path::new(&unique_filename)
                 .file_stem()
                 .unwrap()
                 .to_str()
-                .unwrap(),
-            ALLOWED_THUMB_SIZES[0]
+                .unwrap()
         ));
         assert!(
             !expected_thumb_path.exists(),
             "Expected thumbnail {:?} to be deleted",
             expected_thumb_path
         );
+
         let manifest_after_delete = service.load_manifest();
         assert!(
             manifest_after_delete.images.get(map_name).is_none()
@@ -754,6 +750,7 @@ mod tests {
                     .is_empty(),
             "Image should be removed from manifest after delete, or map entry removed"
         );
+
         // If the map became empty, the map entry itself should be removed from the maps collection too
         if manifest_after_delete.images.get(map_name).is_none() {
             assert!(
