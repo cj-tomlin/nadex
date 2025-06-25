@@ -484,7 +484,10 @@ pub fn spawn_thumbnail_worker_thread(
         log::info!("Thumbnail worker thread started.");
         for job in job_receiver {
             // Loop will terminate if sender disconnects and channel is empty
-            log::debug!("Worker received job for path: {}", job.image_file_path.display());
+            log::debug!(
+                "Worker received job for path: {}",
+                job.image_file_path.display()
+            );
 
             // Construct the key for the result, similar to how it's done in get_or_request_thumbnail_texture
             let thumb_path_key = module_construct_thumbnail_path(

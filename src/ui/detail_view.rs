@@ -80,7 +80,7 @@ pub fn show_detail_modal(
         .interactable(true)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
-                .inner_margin(egui::Margin::same(10.0))
+                .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.set_max_width(modal_target_width);
                     ui.set_max_height(modal_target_height);
@@ -96,7 +96,8 @@ pub fn show_detail_modal(
                         }
                     });
 
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| { // Center the main content column
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        // Center the main content column
                         // Inner layout to keep separator, image, and grid left-aligned with each other
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui_sub| {
                             ui_sub.separator();
@@ -107,22 +108,23 @@ pub fn show_detail_modal(
                                 ))
                                 .max_size(image_display_max_size)
                                 .maintain_aspect_ratio(true);
-    
+
                                 ui_sub.add(img_widget);
                             } else {
                                 ui_sub.label("Loading image...");
                             }
-    
+
                             ui_sub.add_space(5.0);
-    
+
                             egui::Grid::new("detail_metadata_grid")
                                 .num_columns(2)
                                 .spacing([20.0, 3.0])
-                                .show(ui_sub, |ui| { // Inner ui for grid
+                                .show(ui_sub, |ui| {
+                                    // Inner ui for grid
                                     ui.strong("Nade Type:");
                                     ui.label(format!("{:?}", selected_image_meta.nade_type));
                                     ui.end_row();
-    
+
                                     ui.strong("Position:");
                                     ui.label(if selected_image_meta.position.is_empty() {
                                         "[No Position]"
@@ -136,7 +138,7 @@ pub fn show_detail_modal(
                                     } else {
                                         &selected_image_meta.notes
                                     };
-                                    ui.add(egui::Label::new(notes_text).wrap(true));
+                                    ui.add(egui::Label::new(notes_text).wrap());
                                     ui.end_row();
                                 });
                         }); // End of ui_sub (left_aligned_sub_block)

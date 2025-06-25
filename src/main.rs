@@ -31,7 +31,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "nadex",
         options,
-        Box::new(|_cc| Box::new(NadexApp::default())),
+        Box::new(|_cc| Ok(Box::new(NadexApp::default()) as Box<dyn eframe::App>)),
     )
 }
 
@@ -563,10 +563,10 @@ impl eframe::App for NadexApp {
         // Main Central Panel
         egui::CentralPanel::default()
             .frame(egui::Frame::default().inner_margin(egui::Margin {
-                left: 0.0,
-                right: 0.0,
-                top: 0.0,
-                bottom: 0.0,
+                left: 0,
+                right: 0,
+                top: 0,
+                bottom: 0,
             }))
             .show(ctx, |panel_ui| {
                 // Show error message if any
