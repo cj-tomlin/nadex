@@ -103,7 +103,7 @@ impl AppState {
             image_manifest: manifest,
             error_message: None,
             data_dir,               // Comes from initialization above
-            grid_image_size: 477.0, // Default to 'Small' (matches ALLOWED_THUMB_SIZES[2])
+            grid_image_size: 637.0, // Default to 'Medium' size
 
             selected_image_for_detail: None,
             detail_view_texture_handle: None,

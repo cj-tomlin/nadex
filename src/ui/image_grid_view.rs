@@ -152,8 +152,8 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
 
                         // 2. Determine the UV coordinates for the texture based on hover state
                         let uv_rect = if image_response.hovered() {
-                            // Zoom in: show the middle 50% of the image (2x zoom)
-                            let zoom_factor = 2.0;
+                            // Zoom in: show the middle of the image (2.5x zoom)
+                            let zoom_factor = 4.0;
                             let new_uv_size = 1.0 / zoom_factor;
                             let uv_min = (1.0 - new_uv_size) / 2.0;
                             let uv_max = uv_min + new_uv_size;
