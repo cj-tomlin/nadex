@@ -1,6 +1,6 @@
 [package]
 name = "nadex"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 
 [dependencies]
@@ -21,3 +21,5 @@ env_logger = "0.11.3"
 rayon = "1.8"
 tempfile = "3.20.0"
 mpsc = "0.2.6"
+self_update = "0.39.0"
+semver = "1.0.20"

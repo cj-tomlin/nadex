@@ -9,7 +9,8 @@ use log::{self, LevelFilter};
 // persistence::copy_image_to_data is called via persistence::copy_image_to_data_threaded or directly in persistence module
 use crate::app_actions::AppAction;
 use crate::app_state::AppState;
-use crate::ui::upload_modal_view::UploadModal; // Added import
+use crate::ui::upload_modal_view::UploadModal;
+use crate::ui::update_dialog::UpdateDialog; // Added import
 use std::sync::Arc;
 
 mod app_actions;
@@ -49,7 +50,8 @@ fn main() -> eframe::Result<()> {
 struct NadexApp {
     app_state: AppState,
     action_queue: Vec<AppAction>,
-    upload_modal: UploadModal, // Added field
+    upload_modal: UploadModal,
+    update_dialog: UpdateDialog, // Added update dialog field
                                // Potentially other fields that are NOT part of the shared AppState,
                                // like UI-specific temporary state or handles not directly tied to core data.
                                // For now, we assume all listed fields moved.
@@ -60,7 +62,8 @@ impl Default for NadexApp {
         let mut app = Self {
             app_state: AppState::new(),
             action_queue: Vec::new(),
-            upload_modal: UploadModal::new(), // Initialize UploadModal
+            upload_modal: UploadModal::new(),
+            update_dialog: UpdateDialog::default(), // Initialize UpdateDialog
         };
 
         // Convert all existing images to full-size WebP format
@@ -592,7 +595,20 @@ impl eframe::App for NadexApp {
 
         // Top Bar
         egui::TopBottomPanel::top("top_panel").show(ctx, |top_ui| {
-            ui::top_bar_view::show_top_bar(&mut self.app_state, top_ui, &mut self.action_queue);
+            // Add Help menu with Check for Updates option
+            top_ui.horizontal(|ui| {
+                ui::top_bar_view::show_top_bar(&mut self.app_state, ui, &mut self.action_queue);
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button("Help", |ui| {
+                        if ui.button("Check for Updates").clicked() {
+                            self.update_dialog.open = true;
+                            self.update_dialog.check_for_updates(ctx);
+                            ui.close_menu();
+                        }
+                    });
+                });
+            });
         });
 
         // Main Central Panel
@@ -667,5 +683,8 @@ impl eframe::App for NadexApp {
                 &mut self.action_queue,
             );
         }
+        
+        // --- Update Dialog ---
+        self.update_dialog.show(ctx);
     }
 }
