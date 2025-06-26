@@ -1,6 +1,7 @@
 use log::{error, info, warn};
 use self_update::cargo_crate_version;
 use semver::Version;
+use std::{env, process::Command};
 
 // Repository details for GitHub releases
 const REPO_OWNER: &str = "cj-tomlin"; // Updated with actual GitHub username
@@ -8,6 +9,7 @@ const REPO_NAME: &str = "nadex";
 const BIN_NAME: &str = "nadex";
 
 /// Auto-updater status result
+#[derive(Debug)]
 pub enum UpdateStatus {
     /// Application is up to date
     UpToDate,
@@ -92,4 +94,21 @@ pub fn update_to_latest() -> UpdateStatus {
             UpdateStatus::Error(e.to_string())
         }
     }
+}
+
+/// Restart the application after an update
+pub fn restart_application() -> Result<(), String> {
+    info!("Restarting application...");
+
+    // Get the current executable path
+    let executable =
+        env::current_exe().map_err(|e| format!("Failed to get current executable path: {}", e))?;
+
+    // Start a new process of the executable
+    Command::new(executable)
+        .spawn()
+        .map_err(|e| format!("Failed to start new process: {}", e))?;
+
+    // Exit the current process
+    std::process::exit(0);
 }

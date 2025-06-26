@@ -59,28 +59,46 @@ struct NadexApp {
 
 impl Default for NadexApp {
     fn default() -> Self {
-        let mut app = Self {
-            app_state: AppState::new(),
-            action_queue: Vec::new(),
-            upload_modal: UploadModal::new(),
-            update_dialog: UpdateDialog::default(), // Initialize UpdateDialog
-        };
+    let mut app = Self {
+        app_state: AppState::new(),
+        action_queue: Vec::new(),
+        upload_modal: UploadModal::new(),
+        update_dialog: UpdateDialog::default(), // Initialize UpdateDialog
+    };
 
-        // Convert all existing images to full-size WebP format
-        log::info!("Converting existing images to full-size WebP on startup...");
-        match crate::services::convert_existing_images::convert_all_images_to_full_webp(
-            &app.app_state.data_dir,
-            &app.app_state.image_manifest,
-            &app.app_state.thumbnail_service,
-        ) {
-            Ok(count) => log::info!("Converted {} existing images to WebP format", count),
-            Err(e) => log::error!("Failed to convert existing images: {}", e),
-        }
+    // Convert all existing images to full-size WebP format
+    log::info!("Converting existing images to full-size WebP on startup...");
+    match crate::services::convert_existing_images::convert_all_images_to_full_webp(
+        &app.app_state.data_dir,
+        &app.app_state.image_manifest,
+        &app.app_state.thumbnail_service,
+    ) {
+        Ok(count) => log::info!("Converted {} existing images to WebP format", count),
+        Err(e) => log::error!("Failed to convert existing images: {}", e),
+    }
 
-        // filter_images_for_current_map needs to be called after AppState is initialized
-        // and it will now operate on app.app_state fields.
-        app.filter_images_for_current_map();
-        app
+    // filter_images_for_current_map needs to be called after AppState is initialized
+    // and it will now operate on app.app_state fields.
+    app.filter_images_for_current_map();
+    
+    // Start automatic update check on startup
+    log::info!("Checking for updates on startup...");
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    
+    // Start update check in background thread
+    let ctx_handle = eframe::egui::Context::default();
+    std::thread::spawn(move || {
+        let status = crate::services::updater::update_to_latest();
+        tx.send(status).unwrap_or_else(|e| {
+            log::error!("Failed to send update status: {}", e);
+        });
+        ctx_handle.request_repaint();
+    });
+    
+    // Store the update check receiver for processing in the first update cycle
+    app.update_dialog.startup_check_receiver = Some(rx);
+    app
     }
 }
 
@@ -595,19 +613,8 @@ impl eframe::App for NadexApp {
 
         // Top Bar
         egui::TopBottomPanel::top("top_panel").show(ctx, |top_ui| {
-            // Add Help menu with Check for Updates option
             top_ui.horizontal(|ui| {
                 ui::top_bar_view::show_top_bar(&mut self.app_state, ui, &mut self.action_queue);
-                
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("Help", |ui| {
-                        if ui.button("Check for Updates").clicked() {
-                            self.update_dialog.open = true;
-                            self.update_dialog.check_for_updates(ctx);
-                            ui.close_menu();
-                        }
-                    });
-                });
             });
         });
 
