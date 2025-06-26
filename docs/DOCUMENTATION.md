@@ -14,6 +14,7 @@ For a user-focused guide on features and how to run the application, please see 
     -   [`ImageService`](#imageservice)
     -   [`PersistenceService`](#persistenceservice)
     -   [`ThumbnailService`](#thumbnailservice)
+    -   [`Updater`](#updater)
 3.  [Asynchronous Operations](#3-asynchronous-operations)
     -   [Image Upload Workflow](#image-upload-workflow)
     -   [Thumbnail Generation Workflow](#thumbnail-generation-workflow)
@@ -78,11 +79,20 @@ Handles all direct interactions with the file system for non-thumbnail image fil
 
 ### `ThumbnailService`
 
-Responsible for all aspects of thumbnail management.
+Responsible for WebP image conversion and optimization.
 
--   **`generate_thumbnail_file`:** Creates a smaller, WebP version of an image file.
--   **`request_thumbnail_generation`:** The entry point for the asynchronous thumbnail generation. It receives a path to a newly uploaded image, spawns a worker thread, and generates thumbnails for all required sizes.
--   **`remove_thumbnails_for_image`:** Deletes all thumbnail files associated with a given main image.
+-   **`convert_to_full_webp`:** Converts an image file to a full-size WebP format for optimal quality and performance.
+-   **`request_image_conversion`:** The entry point for the asynchronous image conversion process. It receives a path to a newly uploaded image, spawns a worker thread, and converts it to WebP format.
+-   **`remove_webp_images_for_image`:** Deletes all WebP images associated with a given main image.
+-   **`convert_existing_images_to_webp`:** A utility function that converts existing uploaded images to WebP format on application startup to maintain compatibility.
+
+### `Updater`
+
+Manages automatic updates from GitHub releases.
+
+-   **`check_for_update`:** Checks GitHub releases for new versions by comparing with the current application version using semantic versioning.
+-   **`update_to_latest`:** Downloads and installs the latest version of the application.
+-   **`UpdateStatus`:** An enum that represents different states of the update process (UpToDate, UpdateAvailable, Updated, Error).
 
 ---
 
