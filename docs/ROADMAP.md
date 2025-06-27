@@ -10,5 +10,6 @@ This document outlines potential future enhancements and known issues for the Na
     -   Display a top-down view of the selected map with standard callout locations marked.
     -   Potentially allow opening this map in a separate, resizable window for reference.
 -   **Sharing System:** Create a system for users to export their nades/strats (e.g., to a single file) and import them into another user's Nadex application.
+-   **App Icon:** Create an icon for the application.
 
 ## Known Issues & Areas for Improvement
