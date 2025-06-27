@@ -13,3 +13,4 @@ This document outlines potential future enhancements and known issues for the Na
 -   **App Icon:** Create an icon for the application.
 
 ## Known Issues & Areas for Improvement
+- **Auto-update:** Auto-update is not working.
