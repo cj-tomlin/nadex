@@ -33,6 +33,8 @@ pub struct MapMeta {
 pub struct ImageManifest {
     pub images: HashMap<String, Vec<ImageMeta>>, // map_name -> Vec<ImageMeta>
     pub maps: HashMap<String, MapMeta>,          // map_name -> MapMeta
+    #[serde(default)]
+    pub webp_migration_completed: bool, // Tracks if the one-time WebP migration has been performed
 }
 
 impl ImageManifest {

@@ -51,6 +51,9 @@ pub enum AppAction {
     // --- Delete Confirmation Modal Actions ---
     DeleteConfirm,
     DeleteCancel,
+
+    // --- Sharing Actions ---
+    ShowSharingView,
     // Add other action categories and specific actions as needed
     // Example: Modal Actions, etc.
 }

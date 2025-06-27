@@ -72,6 +72,11 @@ impl PersistenceService {
         Ok(Self { data_dir })
     }
 
+    // Get the data directory path
+    pub fn get_data_dir(&self) -> PathBuf {
+        self.data_dir.clone()
+    }
+
     // Methods for load_manifest, save_manifest, copy_image_to_storage, etc., will be added here.
     pub fn load_manifest(&self) -> ImageManifest {
         let manifest_path = self.data_dir.join("manifest.json");
@@ -130,6 +135,18 @@ impl PersistenceService {
         }
         let map_dir = self.ensure_map_dir(map)?;
 
+        // Temporarily copy the original image to use for WebP conversion
+        // Preserve the file extension to ensure image format can be determined
+        let original_extension = src
+            .extension()
+            .map(|ext| ext.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "tmp".to_string());
+        let tmp_path = map_dir.join(format!("tmp_for_conversion.{}", original_extension));
+        fs::copy(src, &tmp_path).map_err(|e| {
+            log::error!("Failed to copy source image to temp location: {}", e);
+            PersistenceServiceError::IoError(e)
+        })?;
+
         let original_filename = src.file_name().ok_or_else(|| {
             PersistenceServiceError::InvalidInput("Invalid source path".to_string())
         })?;
@@ -139,51 +156,24 @@ impl PersistenceService {
                 PersistenceServiceError::InvalidInput("Could not extract file stem".to_string())
             })?
             .to_string_lossy();
-        let extension = Path::new(original_filename)
-            .extension()
-            .map_or_else(|| "", |ext| ext.to_str().unwrap_or(""));
 
+        // Generate a unique filename with timestamp and .webp extension
         let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f").to_string();
-        let unique_filename_str = if extension.is_empty() {
-            format!("{}_{}", stem, timestamp)
-        } else {
-            format!("{}_{}.{}", stem, timestamp, extension)
-        };
+        let unique_webp_filename = format!("{}_{}_{}.webp", stem, timestamp, map.replace(" ", "_"));
 
-        let dest_path = map_dir.join(&unique_filename_str);
-        fs::copy(src, &dest_path)?;
-
-        // After successfully copying the main image, convert it to full-size WebP.
-        let thumb_storage_dir = map_dir.join(".thumbnails");
-
-        // Ensure the thumbnails directory exists
-        if !thumb_storage_dir.exists() {
-            match fs::create_dir_all(&thumb_storage_dir) {
-                Ok(_) => log::info!(
-                    "Created thumbnails directory: {}",
-                    thumb_storage_dir.display()
-                ),
-                Err(e) => {
-                    log::error!(
-                        "Failed to create thumbnails directory {}: {}",
-                        thumb_storage_dir.display(),
-                        e
-                    );
-                    return Err(PersistenceServiceError::IoError(e));
-                }
-            }
-        }
+        // Direct path for the WebP file in the main map directory, not in .thumbnails
+        let webp_dest_path = map_dir.join(&unique_webp_filename);
 
         // Acquire lock on thumbnail service with better error handling
         let thumbnail_service_locked = match thumbnail_service.lock() {
             Ok(service) => service,
             Err(e) => {
                 log::error!("Failed to acquire lock on thumbnail service: {}", e);
-                // Clean up the copied image since we can't proceed
-                if let Err(remove_err) = fs::remove_file(&dest_path) {
+                // Clean up the temporary image since we can't proceed
+                if let Err(remove_err) = fs::remove_file(&tmp_path) {
                     log::error!(
-                        "Additionally, failed to cleanup main image file {} after lock error: {}",
-                        dest_path.display(),
+                        "Additionally, failed to cleanup temporary file {} after lock error: {}",
+                        tmp_path.display(),
                         remove_err
                     );
                 }
@@ -194,38 +184,39 @@ impl PersistenceService {
             }
         };
 
-        // Generate a single full-size WebP version of the image instead of multiple thumbnails
-        match thumbnail_service_locked.convert_to_full_webp(&dest_path, &thumb_storage_dir) {
-            Ok(webp_path) => {
+        // Convert directly to WebP in the main directory instead of .thumbnails
+        let webp_result =
+            thumbnail_service_locked.convert_to_webp_at_path(&tmp_path, &webp_dest_path);
+
+        // Clean up temporary file regardless of conversion result
+        if let Err(remove_err) = fs::remove_file(&tmp_path) {
+            log::error!("Failed to clean up temporary file: {}", remove_err);
+            // Continue with the conversion result, don't fail just because cleanup failed
+        }
+
+        // Check WebP conversion result
+        match webp_result {
+            Ok(_) => {
                 log::info!(
-                    "WebP image successfully generated at: {}",
-                    webp_path.display()
+                    "WebP image successfully created at: {}",
+                    webp_dest_path.display()
                 );
             }
             Err(e) => {
                 log::error!("Failed to convert image to WebP: {:?}", e);
-                // Attempt to clean up the copied main image file
-                if let Err(remove_err) = fs::remove_file(&dest_path) {
-                    log::error!(
-                        "Additionally, failed to cleanup main image file {} after WebP conversion error: {}",
-                        dest_path.display(),
-                        remove_err
-                    );
-                }
-                // Propagate the WebP conversion error, wrapped in PersistenceServiceError
                 return Err(PersistenceServiceError::ThumbnailGenerationFailed(e));
             }
         }
 
-        // Successfully copied image and generated thumbnails, now update manifest
+        // Successfully created WebP image, now update manifest
         let mut manifest = self.load_manifest();
 
         let image_meta = ImageMeta {
-            filename: unique_filename_str.clone(), // unique_filename_str is String
-            map: map.to_string(),                  // map is &str from function arguments
-            nade_type,                             // Use passed-in nade_type
-            notes,                                 // Use passed-in notes
-            position,                              // Use passed-in position
+            filename: unique_webp_filename.clone(), // Use the WebP filename in the manifest
+            map: map.to_string(),
+            nade_type,
+            notes,
+            position,
         };
 
         manifest
@@ -245,7 +236,7 @@ impl PersistenceService {
 
         self.save_manifest(&manifest)?;
 
-        Ok((dest_path, unique_filename_str))
+        Ok((webp_dest_path, unique_webp_filename))
     }
 
     pub fn delete_image_and_thumbnails(
@@ -527,13 +518,29 @@ mod tests {
         );
         assert!(result.is_ok(), "copy_image_to_data failed: {:?}", result);
         let (dest_path, unique_filename) = result.unwrap();
+
+        // Verify the destination path exists and is a WebP file
         assert!(
             dest_path.exists(),
             "Destination file should exist at {:?}",
             dest_path
         );
+        assert!(
+            unique_filename.to_lowercase().ends_with(".webp"),
+            "Filename should be WebP format: {}",
+            unique_filename
+        );
+
+        // Verify the destination path is in the main directory (not in .thumbnails)
         let expected_dest_path = env.data_dir_path.join(map_name).join(&unique_filename);
         assert_eq!(dest_path, expected_dest_path, "Destination path mismatch");
+
+        // Verify the original non-WebP file doesn't exist
+        let original_filename = unique_filename.replace(".webp", ".tmp");
+        let original_path = env.data_dir_path.join(map_name).join(&original_filename);
+        assert!(!original_path.exists(), "Original file should be removed");
+
+        // Verify manifest entries
         let manifest = service.load_manifest();
         assert!(
             manifest.images.get(map_name).is_some(),
@@ -547,7 +554,7 @@ mod tests {
         assert_eq!(
             manifest.images.get(map_name).unwrap()[0].filename,
             unique_filename,
-            "Filename in manifest mismatch"
+            "Filename in manifest should reference WebP file"
         );
         assert!(
             manifest.maps.get(map_name).is_some(),

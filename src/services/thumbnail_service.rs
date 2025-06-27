@@ -228,11 +228,19 @@ impl ThumbnailCache {
 // --- ThumbnailServiceTrait ---
 pub trait ThumbnailServiceTrait: Send + Sync + fmt::Debug {
     /// Convert the source image to a single WebP file at full resolution
+    #[allow(dead_code)] // This is used for the thumbnail cache
     fn convert_to_full_webp(
         &self,
         source_image_path: &Path,
         thumbnail_storage_dir: &Path,
     ) -> Result<PathBuf, ThumbnailServiceError>;
+
+    /// Convert the source image to WebP format at a specific output path
+    fn convert_to_webp_at_path(
+        &self,
+        source_image_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), ThumbnailServiceError>;
 
     /// Remove all thumbnails for a specific image
     fn remove_thumbnails_for_image(
@@ -420,6 +428,14 @@ impl ThumbnailServiceTrait for ConcreteThumbnailService {
         output_dir: &Path,
     ) -> Result<PathBuf, ThumbnailServiceError> {
         _static_convert_to_full_webp(original_image_path, output_dir)
+    }
+
+    fn convert_to_webp_at_path(
+        &self,
+        source_image_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), ThumbnailServiceError> {
+        _static_convert_to_webp_at_path(source_image_path, output_path)
     }
 
     fn remove_thumbnails_for_image(
@@ -634,6 +650,47 @@ fn process_job_to_color_image(
     };
 
     Ok((color_image, (width, height)))
+}
+
+// Private static helper for converting an image to WebP at a specific output path
+fn _static_convert_to_webp_at_path(
+    source_image_path: &Path,
+    output_path: &Path,
+) -> Result<(), ThumbnailServiceError> {
+    if !source_image_path.exists() {
+        return Err(ThumbnailServiceError::ImageOpen(
+            source_image_path.to_path_buf(),
+            SerializableImageError {
+                message: "Source image file does not exist.".to_string(),
+            },
+        ));
+    }
+
+    // Ensure the output directory exists
+    if let Some(parent) = output_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| {
+                ThumbnailServiceError::DirectoryCreation(parent.to_path_buf(), e.into())
+            })?;
+        }
+    }
+
+    // Open the source image
+    let img = image::open(source_image_path).map_err(|e| {
+        ThumbnailServiceError::ImageOpen(source_image_path.to_path_buf(), (&e).into())
+    })?;
+
+    // Convert to RGBA8 for consistent WebP encoding
+    let rgba_img = img.to_rgba8();
+
+    // Save directly to the specified output path with WebP format
+    rgba_img
+        .save_with_format(output_path, image::ImageFormat::WebP)
+        .map_err(|e| ThumbnailServiceError::ImageSave(output_path.to_path_buf(), (&e).into()))?;
+
+    log::info!("WebP conversion complete: {}", output_path.display());
+
+    Ok(())
 }
 
 // Private static helper for converting an image to full-size WebP
@@ -1067,6 +1124,50 @@ mod tests {
 
         // With the new single full-size WebP approach, we only have one file to check
         assert!(webp_path.exists(), "Locked WebP file should still exist");
+    }
+
+    #[test]
+    fn test_convert_to_webp_at_path_success() {
+        let env = setup_thumbnail_test_env();
+        let service = new_test_thumbnail_service(); // Get an instance of ConcreteThumbnailService
+
+        // Create a test image
+        let original_image_width = 1024;
+        let original_image_height = 768;
+        let source_image_path = create_dummy_image_file(
+            &env.source_dir,
+            "test_convert_at_path.png",
+            original_image_width,
+            original_image_height,
+        );
+
+        // Create destination path
+        let dest_webp_path = env.output_dir.join("converted_direct.webp");
+
+        // Test convert_to_webp_at_path
+        let result = service.convert_to_webp_at_path(&source_image_path, &dest_webp_path);
+
+        // Verify conversion succeeded
+        assert!(
+            result.is_ok(),
+            "convert_to_webp_at_path failed: {:?}",
+            result.err()
+        );
+
+        // Verify that the WebP file was created at the specified location
+        assert!(
+            dest_webp_path.exists(),
+            "WebP file was not created at the specified location"
+        );
+
+        // Verify the saved file is actually a WebP image
+        let webp_bytes = std::fs::read(&dest_webp_path).expect("Failed to read WebP file");
+        let format = image::guess_format(&webp_bytes).expect("Failed to determine image format");
+        assert_eq!(
+            format,
+            image::ImageFormat::WebP,
+            "Saved image is not in WebP format"
+        );
     }
 
     #[test]

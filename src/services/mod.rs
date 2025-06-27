@@ -1,6 +1,6 @@
 // src/services/mod.rs
 
-pub mod convert_existing_images;
+pub mod export_service;
 pub mod image_service;
 pub mod persistence_service;
 pub mod thumbnail_service;

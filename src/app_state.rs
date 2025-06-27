@@ -23,6 +23,8 @@ pub struct AppState {
     pub selected_nade_type: Option<NadeType>,
     // Upload modal state
     pub show_upload_modal: bool, // This flag will be used by NadexApp to control UploadModal visibility
+    // Sharing UI state
+    pub show_sharing_view: bool,
     pub is_processing_upload: bool,
     pub current_map: String,
     pub current_map_images: Vec<ImageMeta>,
@@ -87,6 +89,7 @@ impl AppState {
             current_map: "de_ancient".to_string(),
             current_map_images: Vec::new(),
             show_upload_modal: false, // Managed by NadexApp
+            show_sharing_view: false, // Flag to control sharing view visibility
             is_processing_upload: false,
             maps: vec![
                 "de_ancient",

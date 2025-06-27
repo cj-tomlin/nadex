@@ -121,5 +121,17 @@ pub fn show_top_bar(
             }
         }
         ui_content.style_mut().spacing.item_spacing.x = original_item_spacing;
+
+        // Add flexible space to push the share button to the right
+        ui_content.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Share button logic (now on the right side)
+            if ui
+                .button("Share")
+                .on_hover_text("Export or Import Nade Lineups")
+                .clicked()
+            {
+                action_queue.push(AppAction::ShowSharingView);
+            }
+        });
     });
 }

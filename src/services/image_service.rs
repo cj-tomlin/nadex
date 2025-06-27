@@ -405,6 +405,12 @@ mod tests {
         let position_details = "Site A";
         let throw_instructions = "Align with box, aim at sky, run throw.";
 
+        // Create the map directory and thumbnails directory
+        let map_dir = env.data_dir_path.join(map_name);
+        let thumb_dir = map_dir.join(".thumbnails");
+        std::fs::create_dir_all(&map_dir).expect("Failed to create map directory");
+        std::fs::create_dir_all(&thumb_dir).expect("Failed to create thumbnails directory");
+
         // Use env.temp_dir.path() for temporary source files not part of the app's data structure
         let source_image_dir = env.temp_dir.path().join("source_files");
         fs::create_dir_all(&source_image_dir).expect("Failed to create source_image_dir");
@@ -472,19 +478,24 @@ mod tests {
         // image_service, persistence_service, mock_thumbnail_service, data_dir_path, and temp_dir are from env
 
         let map_name = "test_map_delete";
-        let nade_type = NadeType::Flash;
-        let position_details = "Mid Doors";
-        let throw_instructions = "Simple pop flash.";
+        let nade_type = NadeType::Smoke;
+        let position_details = "Site A";
+        let throw_instructions = "Align with box, aim at sky, run throw.";
 
-        // 1. Upload an image first
-        let source_image_dir = env.temp_dir.path().join("source_files_for_delete");
-        fs::create_dir_all(&source_image_dir)
-            .expect("Failed to create source_image_dir for delete setup");
-        let original_file_path_for_upload =
-            create_dummy_image_file(&source_image_dir, "image_to_be_deleted.png", 1920, 1440);
+        // Create the map directory and thumbnails directory
+        let map_dir = env.data_dir_path.join(map_name);
+        let thumb_dir = map_dir.join(".thumbnails");
+        std::fs::create_dir_all(&map_dir).expect("Failed to create map directory");
+        std::fs::create_dir_all(&thumb_dir).expect("Failed to create thumbnails directory");
+
+        // Use env.temp_dir.path() for temporary source files not part of the app's data structure
+        let source_image_dir = env.temp_dir.path().join("source_files");
+        fs::create_dir_all(&source_image_dir).expect("Failed to create source_image_dir");
+        let original_file_path =
+            create_dummy_image_file(&source_image_dir, "test_delete_img.png", 1920, 1440);
 
         let upload_result = env.image_service.upload_image(
-            &original_file_path_for_upload,
+            &original_file_path,
             map_name,
             nade_type,
             position_details,
@@ -768,6 +779,7 @@ mod tests {
         let mut manifest = ImageManifest {
             images: std::collections::HashMap::new(),
             maps: std::collections::HashMap::new(),
+            webp_migration_completed: false,
         }; // Empty manifest
         // Ensure the map exists in the manifest.maps, but no images for it
         manifest.maps.insert(

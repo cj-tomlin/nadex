@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use crate::persistence::ImageMeta;
-use crate::services::thumbnail_service::ThumbnailServiceTrait;
 use eframe::{NativeOptions, egui};
 
 use log::{self, LevelFilter};
@@ -9,8 +8,9 @@ use log::{self, LevelFilter};
 // persistence::copy_image_to_data is called via persistence::copy_image_to_data_threaded or directly in persistence module
 use crate::app_actions::AppAction;
 use crate::app_state::AppState;
+use crate::ui::sharing_view::SharingView;
+use crate::ui::update_dialog::UpdateDialog;
 use crate::ui::upload_modal_view::UploadModal;
-use crate::ui::update_dialog::UpdateDialog; // Added import
 use std::sync::Arc;
 
 mod app_actions;
@@ -51,7 +51,8 @@ struct NadexApp {
     app_state: AppState,
     action_queue: Vec<AppAction>,
     upload_modal: UploadModal,
-    update_dialog: UpdateDialog, // Added update dialog field
+    update_dialog: UpdateDialog,
+    sharing_view: SharingView, // Added sharing view field
                                // Potentially other fields that are NOT part of the shared AppState,
                                // like UI-specific temporary state or handles not directly tied to core data.
                                // For now, we assume all listed fields moved.
@@ -59,46 +60,36 @@ struct NadexApp {
 
 impl Default for NadexApp {
     fn default() -> Self {
-    let mut app = Self {
-        app_state: AppState::new(),
-        action_queue: Vec::new(),
-        upload_modal: UploadModal::new(),
-        update_dialog: UpdateDialog::default(), // Initialize UpdateDialog
-    };
+        let mut app = Self {
+            app_state: AppState::new(),
+            action_queue: Vec::new(),
+            upload_modal: UploadModal::new(),
+            update_dialog: UpdateDialog::default(),
+            sharing_view: SharingView::new(),
+        };
 
-    // Convert all existing images to full-size WebP format
-    log::info!("Converting existing images to full-size WebP on startup...");
-    match crate::services::convert_existing_images::convert_all_images_to_full_webp(
-        &app.app_state.data_dir,
-        &app.app_state.image_manifest,
-        &app.app_state.thumbnail_service,
-    ) {
-        Ok(count) => log::info!("Converted {} existing images to WebP format", count),
-        Err(e) => log::error!("Failed to convert existing images: {}", e),
-    }
+        // filter_images_for_current_map needs to be called after AppState is initialized
+        // and it will now operate on app.app_state fields.
+        app.filter_images_for_current_map();
 
-    // filter_images_for_current_map needs to be called after AppState is initialized
-    // and it will now operate on app.app_state fields.
-    app.filter_images_for_current_map();
-    
-    // Start automatic update check on startup
-    log::info!("Checking for updates on startup...");
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    
-    // Start update check in background thread
-    let ctx_handle = eframe::egui::Context::default();
-    std::thread::spawn(move || {
-        let status = crate::services::updater::update_to_latest();
-        tx.send(status).unwrap_or_else(|e| {
-            log::error!("Failed to send update status: {}", e);
+        // Start automatic update check on startup
+        log::info!("Checking for updates on startup...");
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel();
+
+        // Start update check in background thread
+        let ctx_handle = eframe::egui::Context::default();
+        std::thread::spawn(move || {
+            let status = crate::services::updater::update_to_latest();
+            tx.send(status).unwrap_or_else(|e| {
+                log::error!("Failed to send update status: {}", e);
+            });
+            ctx_handle.request_repaint();
         });
-        ctx_handle.request_repaint();
-    });
-    
-    // Store the update check receiver for processing in the first update cycle
-    app.update_dialog.startup_check_receiver = Some(rx);
-    app
+
+        // Store the update check receiver for processing in the first update cycle
+        app.update_dialog.startup_check_receiver = Some(rx);
+        app
     }
 }
 
@@ -110,25 +101,8 @@ impl NadexApp {
     fn load_detail_image(&mut self, ctx: &egui::Context, image_meta: &ImageMeta) {
         // First try to load from the full-size WebP in the thumbnails directory
         let map_dir = self.app_state.data_dir.join(&self.app_state.current_map);
-        let original_image_path = map_dir.join(&image_meta.filename);
-
-        // Use module_construct_thumbnail_path with size=0 for full-size WebP images
-        use crate::services::thumbnail_service::module_construct_thumbnail_path;
-        let thumb_dir = map_dir.join(".thumbnails");
-        let webp_path = module_construct_thumbnail_path(&original_image_path, &thumb_dir, 0);
-        if !webp_path.exists() {
-            if let Ok(thumbnail_service) = self.app_state.thumbnail_service.lock() {
-                let _ = thumbnail_service
-                    .convert_to_full_webp(&original_image_path, &map_dir.join(".thumbnails"));
-            }
-        }
-
-        // Try the WebP version first, fall back to original if necessary
-        let image_path_to_load = if webp_path.exists() {
-            webp_path
-        } else {
-            original_image_path
-        };
+        // With WebP-only storage, image files are already in WebP format in the main directory
+        let image_path_to_load = map_dir.join(&image_meta.filename);
         match image::open(&image_path_to_load) {
             Ok(img) => {
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
@@ -389,54 +363,13 @@ impl eframe::App for NadexApp {
                             .or_default()
                             .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
 
-                        // Request full-size WebP conversion for the new image
-                        let image_map_name_for_thumb = new_image_meta.map.clone();
-                        let image_filename_for_thumb = new_image_meta.filename.clone();
-
-                        let image_full_path_for_thumb = self
-                            .app_state
-                            .data_dir
-                            .join(&image_map_name_for_thumb)
-                            .join(&image_filename_for_thumb);
-                        let thumbnails_storage_dir = self
-                            .app_state
-                            .data_dir
-                            .join(&image_map_name_for_thumb)
-                            .join(".thumbnails");
-
+                        // We no longer need to create a duplicate WebP in .thumbnails directory
+                        // The main WebP file is already created in the map directory during upload
+                        // and the display logic uses that file directly
                         log::info!(
-                            "Requesting full-size WebP conversion for image path: {:?}, thumbnail directory: {:?}",
-                            image_full_path_for_thumb,
-                            thumbnails_storage_dir
+                            "Using WebP file from main directory: {}",
+                            new_image_meta.filename
                         );
-
-                        match self.app_state.thumbnail_service.lock() {
-                            Ok(thumbnail_service_guard) => {
-                                // Use convert_to_full_webp instead of request_thumbnail_generation
-                                // This creates the full-size WebP without any size suffix
-                                if let Err(e) = thumbnail_service_guard.convert_to_full_webp(
-                                    &image_full_path_for_thumb,
-                                    &thumbnails_storage_dir,
-                                ) {
-                                    log::error!(
-                                        "Failed to request thumbnail generation for '{}' in map '{}': {}",
-                                        image_filename_for_thumb,
-                                        image_map_name_for_thumb,
-                                        e
-                                    );
-                                    // Optionally, set an error message in app_state if this failure is critical.
-                                    // For now, just logging, as the main image is uploaded and manifest saving is handled separately.
-                                }
-                            }
-                            Err(poison_err) => {
-                                log::error!(
-                                    "Failed to acquire lock on thumbnail_service for image '{}': {}",
-                                    image_filename_for_thumb,
-                                    poison_err
-                                );
-                                // Handle poisoned mutex, perhaps by setting a critical app error that the user can see.
-                            }
-                        }
 
                         // If the uploaded image is for the currently viewed map, update current_map_images directly.
                         if is_current_map {
@@ -568,6 +501,10 @@ impl eframe::App for NadexApp {
                         self.app_state.show_delete_confirmation = None;
                         ctx.request_repaint();
                     }
+                    AppAction::ShowSharingView => {
+                        self.app_state.show_sharing_view = true;
+                        ctx.request_repaint();
+                    }
                 } // End match action
             } // End for loop
         } // End if !actions_to_process.is_empty()
@@ -690,8 +627,24 @@ impl eframe::App for NadexApp {
                 &mut self.action_queue,
             );
         }
-        
+
         // --- Update Dialog ---
         self.update_dialog.show(ctx);
+
+        // --- Sharing View Modal ---
+        if self.app_state.show_sharing_view {
+            egui::Window::new("Share Nade Lineups")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    self.sharing_view.show(ui, &mut self.app_state);
+
+                    ui.add_space(10.0);
+                    if ui.button("Close").clicked() {
+                        self.app_state.show_sharing_view = false;
+                    }
+                });
+        }
     }
 }

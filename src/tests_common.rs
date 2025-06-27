@@ -186,6 +186,85 @@ impl ThumbnailServiceTrait for MockThumbnailService {
         }
     }
 
+    fn convert_to_webp_at_path(
+        &self,
+        _source_image_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), ThumbnailServiceError> {
+        if *self.generate_should_fail.lock().unwrap() {
+            if let Some(err) = self.generation_error_type.lock().unwrap().take() {
+                return Err(err);
+            }
+
+            // Default error if specific one isn't set
+            return Err(ThumbnailServiceError::ImageSave(
+                output_path.to_path_buf(),
+                SerializableImageError {
+                    message: "Mock WebP conversion failure".to_string(),
+                },
+            ));
+        }
+
+        // In the successful case, create a tiny dummy image at the output path to simulate conversion
+        if let Some(parent_dir) = output_path.parent() {
+            if !parent_dir.exists() {
+                fs::create_dir_all(parent_dir).map_err(|e| {
+                    ThumbnailServiceError::DirectoryCreation(parent_dir.to_path_buf(), e.into())
+                })?;
+            }
+        }
+
+        // Create a 1x1 WebP image at the output path
+        let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_fn(1, 1, |_, _| {
+            image::Rgba([255, 255, 255, 255]) // White pixel
+        });
+        img.save_with_format(output_path, image::ImageFormat::WebP)
+            .map_err(|e| {
+                ThumbnailServiceError::ImageSave(
+                    output_path.to_path_buf(),
+                    SerializableImageError {
+                        message: format!("Failed to save mock WebP: {}", e),
+                    },
+                )
+            })?;
+
+        // Also create a copy in the thumbnails directory
+        if let Some(file_name) = output_path.file_name() {
+            if let Some(map_dir) = output_path.parent() {
+                let thumbnails_dir = map_dir.join(".thumbnails");
+                if !thumbnails_dir.exists() {
+                    fs::create_dir_all(&thumbnails_dir).map_err(|e| {
+                        ThumbnailServiceError::DirectoryCreation(
+                            thumbnails_dir.to_path_buf(),
+                            e.into(),
+                        )
+                    })?;
+                }
+                let thumb_path = thumbnails_dir.join(file_name);
+                fs::copy(output_path, &thumb_path).map_err(|e| {
+                    ThumbnailServiceError::ImageSave(
+                        thumb_path.clone(),
+                        SerializableImageError {
+                            message: format!("Failed to copy to thumbnails dir: {}", e),
+                        },
+                    )
+                })?;
+                self.created_thumbnail_paths
+                    .lock()
+                    .unwrap()
+                    .push(thumb_path);
+            }
+        }
+
+        // Track created paths for testing
+        self.created_thumbnail_paths
+            .lock()
+            .unwrap()
+            .push(output_path.to_path_buf());
+
+        Ok(())
+    }
+
     fn convert_to_full_webp(
         &self,
         original_image_path: &Path,

@@ -77,33 +77,15 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                         egui::Color32::from_gray(30), // Darker placeholder
                     );
                 } else {
-                    let img_path = data_dir_clone
-                        .join(&current_meta_ref.map)
-                        .join(&current_meta_ref.filename);
-                    let thumb_dir = data_dir_clone
-                        .join(&current_meta_ref.map)
-                        .join(".thumbnails");
-                    let _target_display_size = app.grid_image_size as u32; // No longer used for thumbnail sizing
-                    let mut loaded_thumbnail = false;
-
-                    // Use module_construct_thumbnail_path with size=0 for full-size WebP images
-                    // This ensures consistent path construction across the application
-                    use crate::services::thumbnail_service::module_construct_thumbnail_path;
-
-                    let webp_path = module_construct_thumbnail_path(&img_path, &thumb_dir, 0);
+                    let img_path = app
+                        .data_dir
+                        .join(current_meta_ref.map.clone())
+                        .join(current_meta_ref.filename.clone());
+                    let webp_path = img_path.clone();
                     let thumb_path_key_str = webp_path.to_string_lossy().into_owned();
-                    info!("Looking for WebP image at path: {:?}", webp_path);
-
-                    if !webp_path.exists() {
-                        info!("WebP doesn't exist, converting now: {:?}", img_path);
-                        let _ = app
-                            .thumbnail_service
-                            .lock()
-                            .unwrap()
-                            .convert_to_full_webp(&img_path, &thumb_dir);
-                    }
 
                     // Load the texture into the cache if needed
+                    let mut loaded_thumbnail = false;
                     if webp_path.exists() {
                         if let Ok(mut service) = app.thumbnail_service.lock() {
                             if !service.has_texture(&thumb_path_key_str) {
@@ -118,10 +100,7 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                             }
                         }
                     } else {
-                        info!(
-                            "WebP still doesn't exist after conversion attempt: {:?}",
-                            webp_path
-                        );
+                        info!("WebP file does not exist: {:?}", webp_path);
                     }
 
                     // Attempt to get from cache
