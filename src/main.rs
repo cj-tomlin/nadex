@@ -35,8 +35,12 @@ fn main() -> eframe::Result<()> {
 
     log::info!("Initializing eframe");
 
+    // Get version from Cargo.toml at compile time
+    let app_version = env!("CARGO_PKG_VERSION");
+    let app_title = format!("Nadex v{}", app_version);
+
     eframe::run_native(
-        "nadex",
+        &app_title,
         options,
         Box::new(|_cc| {
             log::info!("Creating NadexApp instance");
