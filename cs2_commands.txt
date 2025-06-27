@@ -5,7 +5,7 @@ CSGO-SM3kP-Vmtsi-fFtU4-6MGLJ-KuwTC
 Disable Grenade Lineup Crosshair (Optional)
 
 // CS2 Console
-cl_draw_only_deathnotices 0
+cl_draw_only_deathnotices 1
 
 // Refrag NADR
 .mapgrenades
