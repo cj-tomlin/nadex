@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex}; // Added for Arc and Mutex
 pub struct AppState {
     // Filtering UI state
     pub selected_nade_type: Option<NadeType>,
+    // Reordering UI state
+    pub reorder_mode: bool,
     // Upload modal state
     pub show_upload_modal: bool, // This flag will be used by NadexApp to control UploadModal visibility
     // Sharing UI state
@@ -86,6 +88,7 @@ impl AppState {
 
         Self {
             selected_nade_type: None,
+            reorder_mode: false,
             current_map: "de_ancient".to_string(),
             current_map_images: Vec::new(),
             show_upload_modal: false, // Managed by NadexApp

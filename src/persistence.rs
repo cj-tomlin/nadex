@@ -22,6 +22,8 @@ pub struct ImageMeta {
     pub nade_type: NadeType,
     pub notes: String,    // How to throw
     pub position: String, // Where this nade is for (e.g., "A Main Smoke")
+    #[serde(default)]
+    pub order: usize,     // Order position for reordering images
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

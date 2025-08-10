@@ -38,6 +38,11 @@ pub enum AppAction {
     ShowUploadModal,
     SetNadeFilter(Option<NadeType>),
     ImageGridImageClicked(ImageMeta),
+    ToggleReorderMode,
+    ReorderImage {
+        from_index: usize,
+        to_index: usize,
+    },
 
     // --- Detail Modal Actions ---
     DetailModalClose,

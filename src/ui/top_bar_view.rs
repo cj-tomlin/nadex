@@ -122,6 +122,25 @@ pub fn show_top_bar(
         }
         ui_content.style_mut().spacing.item_spacing.x = original_item_spacing;
 
+        // Reorder mode toggle button
+        ui_content.add_space(15.0);
+        let reorder_button_text = if app_state.reorder_mode {
+            egui::RichText::new("🔄 Reorder Mode: ON").color(text_color_selected)
+        } else {
+            egui::RichText::new("🔄 Reorder Mode").color(text_color_unselected)
+        };
+        
+        let mut reorder_button = egui::Button::new(reorder_button_text);
+        if app_state.reorder_mode {
+            reorder_button = reorder_button.fill(ui_content.style().visuals.selection.bg_fill);
+        } else {
+            reorder_button = reorder_button.fill(egui::Color32::TRANSPARENT);
+        }
+        
+        if ui_content.add(reorder_button).clicked() {
+            action_queue.push(AppAction::ToggleReorderMode);
+        }
+
         // Add flexible space to push the share button to the right
         ui_content.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Share button logic (now on the right side)

@@ -217,6 +217,7 @@ impl PersistenceService {
             nade_type,
             notes,
             position,
+            order: 0, // Will be updated when added to manifest
         };
 
         manifest
@@ -424,6 +425,7 @@ mod tests {
             nade_type: NadeType::default(),
             notes: "Test notes".to_string(),
             position: "A Site".to_string(),
+            order: 0,
         };
         expected_manifest
             .images
@@ -472,6 +474,7 @@ mod tests {
             nade_type: NadeType::default(),
             notes: "Saved notes".to_string(),
             position: "B Site".to_string(),
+            order: 0,
         };
         manifest_to_save
             .images

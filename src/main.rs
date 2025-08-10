@@ -509,6 +509,61 @@ impl eframe::App for NadexApp {
                         self.app_state.show_sharing_view = true;
                         ctx.request_repaint();
                     }
+                    AppAction::ToggleReorderMode => {
+                        self.app_state.reorder_mode = !self.app_state.reorder_mode;
+                        ctx.request_repaint();
+                    }
+                    AppAction::ReorderImage {
+                        from_index,
+                        to_index,
+                    } => {
+                        // Reorder the images in current_map_images
+                        if from_index != to_index
+                            && from_index < self.app_state.current_map_images.len()
+                            && to_index < self.app_state.current_map_images.len()
+                        {
+                            let item = self.app_state.current_map_images.remove(from_index);
+                            self.app_state.current_map_images.insert(to_index, item);
+
+                            // Update order field for all images
+                            for (idx, image_meta) in
+                                self.app_state.current_map_images.iter_mut().enumerate()
+                            {
+                                image_meta.order = idx;
+                            }
+
+                            // Save the updated order to the manifest
+                            let updated_manifest = self.app_state.image_manifest.clone();
+                            let map_name = self.app_state.current_map.clone();
+                            if updated_manifest.images.contains_key(&map_name) {
+                                let mut new_manifest = updated_manifest;
+                                new_manifest
+                                    .images
+                                    .insert(map_name, self.app_state.current_map_images.clone());
+                                self.app_state.image_manifest = new_manifest;
+
+                                // Persist the changes
+                                let persistence_service =
+                                    Arc::clone(&self.app_state.persistence_service);
+                                let manifest_to_save = self.app_state.image_manifest.clone();
+                                let sender = self.app_state.upload_result_sender.clone();
+                                std::thread::spawn(move || {
+                                    let success = persistence_service
+                                        .save_manifest(&manifest_to_save)
+                                        .is_ok();
+                                    let _ = sender.send(AppAction::ManifestSaveCompleted {
+                                        success,
+                                        error_message: if success {
+                                            None
+                                        } else {
+                                            Some("Failed to save reordered images".to_string())
+                                        },
+                                    });
+                                });
+                            }
+                            ctx.request_repaint();
+                        }
+                    }
                 } // End match action
             } // End for loop
         } // End if !actions_to_process.is_empty()

@@ -121,13 +121,16 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                         let display_width = app.grid_image_size;
                         let display_height = display_width / aspect_ratio;
 
-                        // --- Image Rendering with In-Place Zoom-on-Hover ---
+                        // --- Image Rendering with Drag & Drop Support ---
 
-                        // 1. Allocate space and sense interaction (hover, click)
-                        let (rect, image_response) = ui.allocate_exact_size(
-                            Vec2::new(display_width, display_height),
-                            egui::Sense::click(),
-                        );
+                        // 1. Allocate space and sense interaction (hover, click, drag)
+                        let sense = if app.reorder_mode {
+                            egui::Sense::click_and_drag()
+                        } else {
+                            egui::Sense::click()
+                        };
+                        let (rect, image_response) =
+                            ui.allocate_exact_size(Vec2::new(display_width, display_height), sense);
 
                         // 2. Determine the UV coordinates for the texture based on hover state
                         let uv_rect = if image_response.hovered() {
@@ -146,17 +149,99 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
                         };
 
                         // 3. Paint the image (or the zoomed portion) in the allocated rectangle
-                        ui.painter().image(
-                            texture_handle.id(),
-                            rect,
-                            uv_rect,
-                            egui::Color32::WHITE,
-                        );
+                        let mut tint_color = egui::Color32::WHITE;
 
-                        // 4. Handle click events
-                        if image_response.clicked() {
-                            action_queue
-                                .push(AppAction::ImageGridImageClicked(current_meta_ref.clone()));
+                        // Add visual feedback for drag & drop in reorder mode
+                        if app.reorder_mode {
+                            // Check if this image is being dragged
+                            let is_being_dragged = ui.memory(|mem| {
+                                mem.data
+                                    .get_temp::<usize>(egui::Id::new("drag_source"))
+                                    .map_or(false, |idx| idx == i)
+                            });
+
+                            // Check if any image is currently being dragged
+                            let something_is_being_dragged = ui.memory(|mem| {
+                                mem.data
+                                    .get_temp::<usize>(egui::Id::new("drag_source"))
+                                    .is_some()
+                            });
+
+                            // Check if this is a valid drop target
+                            let is_drop_target = image_response.hovered()
+                                && something_is_being_dragged
+                                && !is_being_dragged;
+
+                            if is_being_dragged {
+                                // Make the original image very transparent and add a border
+                                tint_color =
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80);
+                                // Draw border using rect_filled for outline effect
+                                let border_rect = rect.expand(2.0);
+                                ui.painter().rect_filled(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    egui::Color32::from_rgb(255, 200, 0),
+                                );
+                            } else if is_drop_target {
+                                // Draw prominent drop target indicator
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::default(),
+                                    egui::Color32::from_rgba_unmultiplied(0, 255, 0, 80),
+                                );
+                                // Draw border using rect_filled for outline effect
+                                let border_rect = rect.expand(3.0);
+                                ui.painter().rect_filled(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    egui::Color32::from_rgb(0, 200, 0),
+                                );
+                            } else if something_is_being_dragged {
+                                // Dim other images when something is being dragged
+                                tint_color =
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
+                            }
+                        }
+
+                        ui.painter()
+                            .image(texture_handle.id(), rect, uv_rect, tint_color);
+
+                        // 4. Handle click/drag events based on mode
+                        if app.reorder_mode {
+                            // In reorder mode, handle drag & drop
+                            if image_response.drag_started() {
+                                // Store the drag source index
+                                ui.memory_mut(|mem| {
+                                    mem.data.insert_temp(egui::Id::new("drag_source"), i);
+                                });
+                            }
+
+                            if image_response.hovered() && ui.input(|i| i.pointer.any_released()) {
+                                // Check if we're dropping on this image
+                                if let Some(drag_source_idx) = ui.memory(|mem| {
+                                    mem.data.get_temp::<usize>(egui::Id::new("drag_source"))
+                                }) {
+                                    if drag_source_idx != i {
+                                        // Trigger reorder action
+                                        action_queue.push(AppAction::ReorderImage {
+                                            from_index: drag_source_idx,
+                                            to_index: i,
+                                        });
+                                    }
+                                    // Clear the drag source
+                                    ui.memory_mut(|mem| {
+                                        mem.data.remove::<usize>(egui::Id::new("drag_source"));
+                                    });
+                                }
+                            }
+                        } else {
+                            // Normal mode, handle clicks for detail view
+                            if image_response.clicked() {
+                                action_queue.push(AppAction::ImageGridImageClicked(
+                                    current_meta_ref.clone(),
+                                ));
+                            }
                         }
 
                         // 5. Use the allocated rectangle for drawing overlays
@@ -264,5 +349,78 @@ pub fn show_image_grid(app: &mut AppState, ui: &mut Ui, action_queue: &mut Vec<A
 
     if filtered_images.is_empty() {
         ui.label("[No images uploaded for this filter]");
+    }
+
+    // Draw drag preview if something is being dragged in reorder mode
+    if app.reorder_mode {
+        if let Some(drag_source_idx) =
+            ui.memory(|mem| mem.data.get_temp::<usize>(egui::Id::new("drag_source")))
+        {
+            if ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                if let Some(dragged_image) = filtered_images.get(drag_source_idx) {
+                    // Get cursor position
+                    if let Some(cursor_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        // Create a smaller preview of the dragged image
+                        let preview_size = 80.0;
+                        let preview_rect = egui::Rect::from_center_size(
+                            cursor_pos + egui::Vec2::new(10.0, 10.0), // Offset from cursor
+                            egui::Vec2::splat(preview_size),
+                        );
+
+                        // Draw preview background
+                        ui.painter().rect_filled(
+                            preview_rect,
+                            CornerRadius::same(8),
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                        );
+
+                        // Try to get the thumbnail for preview
+                        let webp_path = data_dir_clone
+                            .join(&dragged_image.map)
+                            .join(&dragged_image.filename);
+                        let thumb_path_key_str = webp_path.to_string_lossy().to_string();
+
+                        if let Some((texture_handle, _)) = app
+                            .thumbnail_service
+                            .lock()
+                            .unwrap()
+                            .get_cached_texture_info(&thumb_path_key_str)
+                        {
+                            // Draw the preview image
+                            ui.painter().image(
+                                texture_handle.id(),
+                                preview_rect.shrink(4.0),
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                            );
+                        }
+
+                        // Add text label showing what's being dragged
+                        let label_rect = egui::Rect::from_min_size(
+                            preview_rect.min + egui::Vec2::new(0.0, preview_size + 5.0),
+                            egui::Vec2::new(120.0, 20.0),
+                        );
+                        ui.painter().rect_filled(
+                            label_rect,
+                            CornerRadius::same(4),
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                        );
+                        ui.painter().text(
+                            label_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!(
+                                "Moving: {}",
+                                dragged_image.position.chars().take(15).collect::<String>()
+                            ),
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
+            }
+        }
     }
 }

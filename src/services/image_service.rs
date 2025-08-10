@@ -204,6 +204,7 @@ impl ImageService {
             nade_type,
             notes: throw_instructions.to_string(),
             position: position_details.to_string(),
+            order: 0, // Will be set properly when added to manifest
         };
 
         // Manifest update and saving are handled by persistence_service.copy_image_to_data.
@@ -774,6 +775,7 @@ mod tests {
             nade_type: NadeType::Molotov,
             position: "A Site".to_string(),
             notes: "Default plant molly".to_string(),
+            order: 0,
         };
 
         let mut manifest = ImageManifest {
@@ -980,6 +982,7 @@ mod tests {
             nade_type: NadeType::Smoke,
             position: "Original Position".to_string(),
             notes: "Original Notes".to_string(),
+            order: 0,
         };
 
         let mut manifest = ImageManifest::default();
@@ -1157,6 +1160,7 @@ mod tests {
             nade_type: NadeType::Smoke,
             position: "A Site".to_string(),
             notes: "Notes for A".to_string(),
+            order: 0,
         };
 
         let mut manifest = ImageManifest::default();
@@ -1181,6 +1185,7 @@ mod tests {
             nade_type: NadeType::Flash,
             position: "Long".to_string(),
             notes: "Notes for C".to_string(),
+            order: 0,
         };
         let image_a_meta = ImageMeta {
             filename: "image_a.png".to_string(),
@@ -1188,6 +1193,7 @@ mod tests {
             nade_type: NadeType::Smoke,
             position: "Connector".to_string(),
             notes: "Notes for A".to_string(),
+            order: 1,
         };
         let image_b_meta = ImageMeta {
             filename: "image_b.png".to_string(),
@@ -1195,6 +1201,7 @@ mod tests {
             nade_type: NadeType::Molotov,
             position: "Monster".to_string(),
             notes: "Notes for B".to_string(),
+            order: 2,
         };
 
         let mut manifest = ImageManifest::default();

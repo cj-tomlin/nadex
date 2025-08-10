@@ -397,6 +397,7 @@ mod tests {
             nade_type: NadeType::Smoke,
             notes: "Jump throw".to_string(),
             position: "A Site Smoke".to_string(),
+            order: 0,
         };
 
         let image2 = ImageMeta {
@@ -405,6 +406,7 @@ mod tests {
             nade_type: NadeType::Flash,
             notes: "Stand still".to_string(),
             position: "B Site Flash".to_string(),
+            order: 1,
         };
 
         images.insert(map_name.to_string(), vec![image1, image2]);
@@ -592,6 +594,7 @@ mod tests {
             nade_type: NadeType::Smoke,
             notes: "Different smoke".to_string(),
             position: "Existing Smoke".to_string(),
+            order: 0,
         });
         dest_manifest
             .images
