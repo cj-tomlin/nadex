@@ -357,15 +357,15 @@ impl eframe::App for NadexApp {
                             new_image_meta.filename,
                             map_name
                         );
-                        // Update in-memory manifest
+                        // Update in-memory manifest using clone_and_add to preserve order
                         let is_current_map = map_name == self.app_state.current_map; // Compare before map_name is moved
+                        let map_name_clone = map_name.clone(); // Clone for later use
 
-                        self.app_state
+                        // Use clone_and_add to properly assign order values and preserve existing order
+                        self.app_state.image_manifest = self
+                            .app_state
                             .image_manifest
-                            .images
-                            .entry(map_name) // map_name is moved here
-                            .or_default()
-                            .push(new_image_meta.clone()); // Clone new_image_meta for the manifest, original is still available
+                            .clone_and_add(new_image_meta.clone(), &map_name);
 
                         // We no longer need to create a duplicate WebP in .thumbnails directory
                         // The main WebP file is already created in the map directory during upload
@@ -375,12 +375,15 @@ impl eframe::App for NadexApp {
                             new_image_meta.filename
                         );
 
-                        // If the uploaded image is for the currently viewed map, update current_map_images directly.
+                        // If the uploaded image is for the currently viewed map, refresh current_map_images from manifest
                         if is_current_map {
-                            self.app_state.current_map_images.push(new_image_meta); // Original new_image_meta is moved here
-                            self.app_state
-                                .current_map_images
-                                .sort_by(|a, b| a.filename.cmp(&b.filename));
+                            // Instead of manually adding and sorting, refresh from the updated manifest
+                            // This ensures we get the proper order from the manifest
+                            self.app_state.current_map_images =
+                                self.app_state.image_service.get_images_for_map_sorted(
+                                    &self.app_state.image_manifest,
+                                    &map_name_clone,
+                                );
                         } else {
                             // If the upload was for a different map, filter_images_for_current_map will handle it
                             // when that map is next selected. The original new_image_meta is dropped here if not used,
