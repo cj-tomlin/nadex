@@ -82,7 +82,13 @@ impl AppState {
         let ts_clone_for_is = Arc::clone(&thumbnail_service);
         let image_service = Arc::new(ImageService::new(ps_clone_for_is, ts_clone_for_is));
 
-        let manifest = persistence_service.load_manifest();
+        let mut manifest = persistence_service.load_manifest();
+
+        // Migrate existing images to have proper order values for backward compatibility
+        manifest.migrate_image_order();
+
+        // Save the migrated manifest if any changes were made
+        let _ = persistence_service.save_manifest(&manifest);
 
         let (tx, rx) = mpsc::channel::<AppAction>();
 

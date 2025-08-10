@@ -90,7 +90,10 @@ impl ImageService {
             .get(map_name)
             .map_or_else(Vec::new, |images_for_map| {
                 let mut sorted_images = images_for_map.clone();
-                sorted_images.sort_by(|a, b| a.filename.cmp(&b.filename));
+                // Sort by order field first, then by filename as fallback
+                sorted_images.sort_by(|a, b| {
+                    a.order.cmp(&b.order).then_with(|| a.filename.cmp(&b.filename))
+                });
                 sorted_images
             })
     }

@@ -29,8 +29,6 @@ use crate::app_actions::AppAction; // Added
 use crate::app_state::AppState; // Added
 
 impl UploadModal {
-    // ... existing new() method ...
-
     #[allow(clippy::too_many_lines)]
     pub fn show(
         &mut self,
