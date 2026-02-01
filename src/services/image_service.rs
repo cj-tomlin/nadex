@@ -214,15 +214,13 @@ impl ImageService {
         Ok(new_image_meta)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn orchestrate_full_upload_process(
-        self: Arc<Self>, // Take Arc<Self> to move into the thread
+        self: Arc<Self>,
         file_path: PathBuf,
         map_name: String,
         nade_type: NadeType,
         position: String,
         notes: String,
-        initial_manifest: ImageManifest, // Pass the current manifest state
         app_action_sender: mpsc::Sender<AppAction>,
     ) {
         log::info!(
@@ -231,10 +229,7 @@ impl ImageService {
             file_path
         );
 
-        let self_clone_for_save = Arc::clone(&self); // Clone self for the potential second thread
-        let app_action_sender_clone_for_save = app_action_sender.clone(); // Clone sender for the potential second thread
-
-        // Spawn the first background thread for image processing.
+        // Spawn background thread for image processing.
         std::thread::spawn(move || {
             log::info!(
                 "ImageService Orchestration(T1): Starting image processing for {:?}",
@@ -253,29 +248,22 @@ impl ImageService {
                         new_image_meta.filename
                     );
 
-                    // Send action to UI to update its in-memory manifest immediately
+                    // Send action to UI to update its in-memory manifest and trigger save
+                    // The main thread is responsible for saving the manifest to avoid race conditions
+                    // where this background thread might save a stale manifest
                     let ui_update_action = AppAction::UploadSucceededBackgroundTask {
-                        new_image_meta: new_image_meta.clone(), // Clone for UI action
-                        map_name: map_name.clone(),             // Clone map_name for UI action
+                        new_image_meta: new_image_meta.clone(),
+                        map_name: map_name.clone(),
                     };
                     if let Err(e) = app_action_sender.send(ui_update_action) {
                         log::error!(
                             "ImageService Orchestration(T1): Failed to send UploadSucceededBackgroundTask: {}",
                             e
                         );
-                        // Even if this send fails, proceed to try saving the manifest
                     }
-
-                    // Prepare manifest for saving
-                    let manifest_for_saving =
-                        initial_manifest.clone_and_add(new_image_meta, &map_name);
-
-                    log::info!("ImageService Orchestration(T1): Triggering manifest save.");
-                    // Call save_manifest_async (which spawns its own thread)
-                    self_clone_for_save.save_manifest_async(
-                        manifest_for_saving,
-                        app_action_sender_clone_for_save, // Use the cloned sender
-                    );
+                    // Note: Manifest saving is now handled by the main thread after it updates
+                    // its in-memory manifest. This prevents race conditions where concurrent
+                    // operations could cause data loss.
                 }
                 Err(e) => {
                     log::error!(
@@ -295,47 +283,6 @@ impl ImageService {
                         );
                     }
                 }
-            }
-        });
-    }
-
-    pub fn save_manifest_async(
-        self: Arc<Self>,                 // Take Arc<Self> to move into the thread
-        manifest_to_save: ImageManifest, // Pass the manifest by value (it's cloned by caller)
-        app_action_sender: mpsc::Sender<AppAction>,
-    ) {
-        log::info!("ImageService: Queuing background manifest save.");
-        // self (Arc<ImageService>) is moved into the thread.
-        // persistence_service is accessed via self.
-        std::thread::spawn(move || {
-            log::info!("ImageService Background(2): Starting manifest save.");
-            let save_result = self.persistence_service.save_manifest(&manifest_to_save);
-
-            let manifest_completion_action = match save_result {
-                Ok(_) => {
-                    log::info!("ImageService Background(2): Manifest save successful.");
-                    AppAction::ManifestSaveCompleted {
-                        success: true,
-                        error_message: None, // Corrected: No error message on success
-                    }
-                }
-                Err(e) => {
-                    log::error!("ImageService Background(2): Manifest save failed: {}", e);
-                    AppAction::ManifestSaveCompleted {
-                        success: false,
-                        error_message: Some(format!(
-                            "Failed to save manifest (ImageService): {}",
-                            e
-                        )),
-                    }
-                }
-            };
-
-            if let Err(e) = app_action_sender.send(manifest_completion_action) {
-                log::error!(
-                    "ImageService Background(2): Failed to send manifest save completion action: {}",
-                    e
-                );
             }
         });
     }
@@ -1219,8 +1166,9 @@ mod tests {
 
         let result = image_service.get_images_for_map_sorted(&manifest, map_name);
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].filename, "image_a.png");
-        assert_eq!(result[1].filename, "image_b.png");
-        assert_eq!(result[2].filename, "image_c.png");
+        // Sorted by order field: image_c (0), image_a (1), image_b (2)
+        assert_eq!(result[0].filename, "image_c.png");
+        assert_eq!(result[1].filename, "image_a.png");
+        assert_eq!(result[2].filename, "image_b.png");
     }
 } // Closes `mod tests`

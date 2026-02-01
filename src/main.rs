@@ -315,12 +315,9 @@ impl eframe::App for NadexApp {
 
                         let image_service_clone = Arc::clone(&self.app_state.image_service);
                         let sender_clone = self.app_state.upload_result_sender.clone();
-                        // Clone other data needed by the thread
                         let file_path_clone = file_path.clone();
                         let map_name_clone = map_name.clone();
-                        // nade_type, position, notes are Copy or easily clonable
 
-                        let initial_manifest_clone = self.app_state.image_manifest.clone();
                         std::thread::spawn(move || {
                             log::info!(
                                 "Background thread: Delegating to ImageService.orchestrate_full_upload_process for file: {:?}",
@@ -332,15 +329,13 @@ impl eframe::App for NadexApp {
                                 nade_type,
                                 position,
                                 notes,
-                                initial_manifest_clone, // Use the manifest cloned outside the thread
                                 sender_clone,
                             );
                             // ImageService::orchestrate_full_upload_process will send
                             // AppAction::UploadSucceededBackgroundTask or AppAction::UploadFailed
-                            // via the sender_clone. No need to send actions from this thread.
+                            // via the sender_clone.
                         });
 
-                        // The UI thread continues, spinner is managed by SetProcessingUpload actions.
                         ctx.request_repaint();
                     }
                     AppAction::SetProcessingUpload(is_processing) => {
@@ -384,16 +379,33 @@ impl eframe::App for NadexApp {
                                     &self.app_state.image_manifest,
                                     &map_name_clone,
                                 );
-                        } else {
-                            // If the upload was for a different map, filter_images_for_current_map will handle it
-                            // when that map is next selected. The original new_image_meta is dropped here if not used,
-                            // which is fine as it's already cloned into the manifest.
                         }
-                        self.app_state.error_message = None; // Clear any previous error, UI part was fine.
+                        // If the upload was for a different map, filter_images_for_current_map will handle it
+                        // when that map is next selected.
 
-                        // Manifest saving is now orchestrated by ImageService after this action is sent.
-                        // NadexApp only needs to update its in-memory state here.
-                        // A repaint is good to reflect the new image in the grid immediately.
+                        self.app_state.error_message = None; // Clear any previous error
+
+                        // Save the manifest from the main thread to avoid race conditions.
+                        // The main thread has the authoritative, up-to-date manifest state.
+                        let persistence_service =
+                            Arc::clone(&self.app_state.persistence_service);
+                        let manifest_to_save = self.app_state.image_manifest.clone();
+                        let sender = self.app_state.upload_result_sender.clone();
+                        std::thread::spawn(move || {
+                            log::info!("Saving manifest after successful upload...");
+                            let success = persistence_service
+                                .save_manifest(&manifest_to_save)
+                                .is_ok();
+                            let _ = sender.send(AppAction::ManifestSaveCompleted {
+                                success,
+                                error_message: if success {
+                                    None
+                                } else {
+                                    Some("Failed to save manifest after upload".to_string())
+                                },
+                            });
+                        });
+
                         ctx.request_repaint();
                     }
                     AppAction::UploadFailed { error_message } => {
